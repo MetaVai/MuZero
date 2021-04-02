@@ -29,3 +29,12 @@
     ALE(cpp) -> ArcadeLearningEnvironment.jl -> ReinforcementLearningEnvironments.jl -> CommonRLInterface.jl
     (common_rl_intrf -> GI is already implemented)
 
+
+### Mostly based on:
+- DeepMind's nature paper - Schrittwieser et al. (2020) 
+https://www.nature.com/articles/s41586-020-03051-4
+- David Foster's "MuZero:The Walkthrough"
+https://medium.com/applied-data-science/how-to-build-your-own-muzero-in-python-f77d5718061a
+- pseudocode provided with paper 
+https://arxiv.org/src/1911.08265v1/anc/pseudocode.py
+
