@@ -23,6 +23,22 @@ using Flux: relu, softmax, flatten
 using Flux: Chain, Dense, Conv, BatchNorm, SkipConnection
 import Zygote
 
+# Torchlib kernels could be used to speed up GPU computation
+# which kernels are used are based on ALPHAZERO_USE_TORCH variable ("false" / "true")
+const USE_TORCH = get(ENV, "ALPHAZERO_USE_TORCH", "false") == "true"
+
+if USE_TORCH
+  @info "Using Torch kernels on GPU [EXPERIMENTAL]"
+  @eval begin
+    import Torch
+    using Torch: torch
+    array_on_gpu(::Tensor) = true
+  end
+else
+  @info "Using default Flux kernels"
+end
+
+
 #####
 ##### Flux Networks
 #####
@@ -53,7 +69,11 @@ Network.to_cpu(nn::FluxNetwork) = Flux.cpu(nn)
 
 function Network.to_gpu(nn::FluxNetwork)
   CUDA.allowscalar(false)
-  return Flux.gpu(nn)
+  if USE_TORCH
+    return nn |> Torch
+  else
+    return Flux.gpu(nn)
+  end
 end
 
 function Network.set_test_mode!(nn::FluxNetwork, mode)
