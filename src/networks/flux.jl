@@ -27,11 +27,14 @@ import Zygote
 # which kernels are used are based on ALPHAZERO_USE_TORCH variable ("false" / "true")
 const USE_TORCH = get(ENV, "ALPHAZERO_USE_TORCH", "false") == "true"
 
+import Torch
+using Torch: torch
+
 if USE_TORCH
   @info "Using Torch kernels on GPU [EXPERIMENTAL]"
   @eval begin
-    import Torch
-    using Torch: torch
+    # import Torch
+    # #using Torch: torch
     array_on_gpu(::Tensor) = true
   end
 else
@@ -70,7 +73,7 @@ Network.to_cpu(nn::FluxNetwork) = Flux.cpu(nn)
 function Network.to_gpu(nn::FluxNetwork)
   CUDA.allowscalar(false)
   if USE_TORCH
-    return nn |> Torch
+    return nn |> torch
   else
     return Flux.gpu(nn)
   end
@@ -177,6 +180,7 @@ is provided for [`Network.hyperparams`](@ref), [`Network.game_spec`](@ref),
 abstract type TwoHeadNetwork <: FluxNetwork end
 
 function Network.forward(nn::TwoHeadNetwork, state)
+  USE_TORCH && (state = state |> torch)
   c = nn.common(state)
   v = nn.vhead(c)
   p = nn.phead(c)
