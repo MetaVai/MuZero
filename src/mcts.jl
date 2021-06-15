@@ -17,6 +17,7 @@ a pair `(P, V)` where:
 """
 module MCTS
 
+using Base: Integer
 using Distributions: Categorical, Dirichlet
 
 using ..AlphaZero: GI, Util
@@ -131,6 +132,7 @@ mutable struct Env{State, Oracle}
   noise_ϵ :: Float64
   noise_α :: Float64
   prior_temperature :: Float64
+  max_depth :: Int64
   # Performance statistics
   total_simulations :: Int64
   total_nodes_traversed :: Int64
@@ -138,13 +140,13 @@ mutable struct Env{State, Oracle}
   gspec :: GI.AbstractGameSpec
 
   function Env(gspec, oracle;
-      gamma=1., cpuct=1., noise_ϵ=0., noise_α=1., prior_temperature=1.)
+      gamma=1., cpuct=1., noise_ϵ=0., noise_α=1., prior_temperature=1., max_depth=500)
     S = GI.state_type(gspec)
     tree = Dict{S, StateInfo}()
     total_simulations = 0
     total_nodes_traversed = 0
     new{S, typeof(oracle)}(
-      tree, oracle, gamma, cpuct, noise_ϵ, noise_α, prior_temperature,
+      tree, oracle, gamma, cpuct, noise_ϵ, noise_α, prior_temperature, max_depth,
       total_simulations, total_nodes_traversed, gspec)
   end
 end
@@ -195,8 +197,8 @@ end
 # Run a single MCTS simulation, updating the statistics of all traversed states.
 # Return the estimated Q-value for the current player.
 # Modifies the state of the game environment.
-function run_simulation!(env::Env, game; η, root=true)
-  if GI.game_terminated(game)
+function run_simulation!(env::Env, game, depth; η, root=true)
+  if GI.game_terminated(game) || depth > env.max_depth
     return 0.
   else
     state = GI.current_state(game)
@@ -214,7 +216,7 @@ function run_simulation!(env::Env, game; η, root=true)
       wr = GI.white_reward(game)
       r = wp ? wr : -wr
       pswitch = wp != GI.white_playing(game)
-      qnext = run_simulation!(env, game, η=η, root=false)
+      qnext = run_simulation!(env, game, depth+1, η=η, root=false)
       qnext = pswitch ? -qnext : qnext
       q = r + env.gamma * qnext
       update_state_info!(env, state, action_id, q)
@@ -239,7 +241,7 @@ function explore!(env::Env, game, nsims)
   η = dirichlet_noise(game, env.noise_α)
   for i in 1:nsims
     env.total_simulations += 1
-    run_simulation!(env, GI.clone(game), η=η)
+    run_simulation!(env, GI.clone(game), 0, η=η)
   end
 end
 
