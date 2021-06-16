@@ -15,12 +15,12 @@ game = GI.init(env.gspec)
 function AlphaZero.think(p::MctsPlayer, game)
     hidden_state = Representation()(GI.current_state(game))
     mugame = MuGameEnvWrapper(game,
-     Dynamics(gspec=env.gspec),
-      Representation(),
-       hidden_state, hidden_state,
+        CachedOracle(Dynamics(gspec=env.gspec),Dict{Tuple{typeof(hidden_state), Int},Tuple{Float64, typeof(hidden_state)}}()),
+        Representation(),
+        hidden_state, 
         true,
-         Dict{Tuple{typeof(hidden_state), Int},Tuple{Float64, typeof(hidden_state)}}(),
-         0.)
+        GI.white_playing(game),
+        0.)
 
     if isnothing(p.timeout) # Fixed number of MCTS simulations
         MCTS.explore!(p.mcts, mugame, p.niters)
