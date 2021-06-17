@@ -67,6 +67,7 @@ function GI.play!(game::MuGameEnvWrapper, action)
     # (R, S) = game.dynamics_oracle(game.curstate, action)
     (game.lastreward, game.curstate) = game.dynamics_oracle(game.curstate, action)
     game.white_playing = !game.white_playing
+    game.isrootstate = false
 end
 
 GI.white_reward(game::MuGameEnvWrapper) = game.lastreward #vulnerable when call white_reward() before play!()

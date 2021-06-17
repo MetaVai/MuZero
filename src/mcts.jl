@@ -140,8 +140,7 @@ mutable struct Env{State, Oracle}
   gspec :: GI.AbstractGameSpec
 
   function Env(gspec, oracle;
-      gamma=1., cpuct=1., noise_ϵ=0., noise_α=1., prior_temperature=1., max_depth=500)
-    S = GI.state_type(gspec)
+      gamma=1., cpuct=1., noise_ϵ=0., noise_α=1., prior_temperature=1., max_depth=500, S=GI.state_type(gspec))
     tree = Dict{S, StateInfo}()
     total_simulations = 0
     total_nodes_traversed = 0
