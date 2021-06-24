@@ -84,7 +84,7 @@ end
 
 
 
-### general SimpleNet
+### general SimpleNet used in Prediction and Dynamics
 
 @kwdef struct SimpleNetHP_
     indim :: Int
