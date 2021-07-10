@@ -263,10 +263,10 @@ Flux.@functor MuNetwork             (f, g, h)
 
 
 # TODO regularized params
-# regularized_params_(l) = []
-# regularized_params_(l::Flux.Dense) = [l.weight]
-# regularized_params_(l::Flux.Conv) = [l.weight]
+regularized_params_(l) = []
+regularized_params_(l::Flux.Dense) = [l.weight]
+regularized_params_(l::Flux.Conv) = [l.weight]
 
-# function regularized_params(net::Union{RepresentationNetwork,DynamicsNetwork,PredictionNetwork})
-#   return (w for l in Flux.modules(net) for w in regularized_params_(l))
-# end
+function regularized_params(net::MuNetwork)
+  return (w for l in Flux.modules(net) for w in regularized_params_(l))
+end
