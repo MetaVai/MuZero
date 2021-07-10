@@ -107,13 +107,14 @@ function losses(nns, hyper, (X, A_mask, As, Ps, Vs, Rs))
   P̂₀ = normalize_p(P̂₀, A_mask)
   # R̂₀ = zero(V̂₀)
 
-  #! these operations may be slow on GPU
   Lp = lossₚ(P̂₀, @view Ps[ : , 1, :])
   Lv = lossᵥ(V̂₀, @view Vs[1:1, :])
   Lr = zero(Lv) # starts at next step (see MuZero paper appendix)
   
-  # recurrent inference
-  for (i, A) in zip(Iterators.countfrom(2), eachrow(As[1:end-1,:]))
+  #TODO clear up loop 2:Ksteps
+  # recurrent inference 
+  for i in 2:Ksteps
+    A = As[i-1,:]
     R̂, Hiddenstate = forward(dynamics, Hiddenstate, A) # obtain next hiddenstate
     P̂, V̂ = forward(prediction, Hiddenstate)
     # scale loss so that the overall weighting of the recurrent_inference (g,f nns)
@@ -122,10 +123,12 @@ function losses(nns, hyper, (X, A_mask, As, Ps, Vs, Rs))
     Lv += lossᵥ(V̂, @view Vs[i:i, :])  / Ksteps
     Lr += lossᵣ(R̂, @view Rs[i:i, :])  / Ksteps
   end
-  L = Lp + Lv
-  return (L, Lp, Lv)
+  Lreg = iszero(creg) ? zero(Lv) : creg * sum(sum(w.^2) for w in regularized_params(nns))
+  L = Lp + Lv + Lreg
+  return (L, Lp, Lv, Lreg)
 end
 
+#TODO replace Zygote.withgradient() - new version
 function lossgrads(f, args...)
   val, back = Zygote.pullback(f, args...)
   grad = back(Zygote.sensitivity(val))
@@ -150,7 +153,7 @@ struct MuTrainer{M}
   nns :: MuNetwork
   memory :: M #? don't know if memory pointer in trainter is good idea
   hyper
-  opt #? create opt every update_weights!() from opt_recipe
+  opt #TODO create opt every update_weights!() from opt_recipe
 end
 
 function update_weights!(tr::MuTrainer, n)
