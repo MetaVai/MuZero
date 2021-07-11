@@ -13,15 +13,15 @@ struct MuPlayer{M,R,D} <: AbstractPlayer
 end
 
 function MuPlayer(
-	game_spec::AbstractGameSpec, p_oracle, r_oracle, d_oracle, params::MctsParams; timeout=nothing, S=GI.state_type(game_spec)) # TODO automateS
-  mcts = MCTS.Env(game_spec, p_oracle,
+	game_spec::AbstractGameSpec, μnetwork::MuNetwork, params::MctsParams; timeout=nothing, S=Vector{Float32}) # TODO automateS
+  mcts = MCTS.Env(game_spec, μnetwork.f,
 	gamma=params.gamma,
 	cpuct=params.cpuct,
 	noise_ϵ=params.dirichlet_noise_ϵ,
 	noise_α=params.dirichlet_noise_α,
 	prior_temperature=params.prior_temperature,
 	S=S)
-  return MuPlayer(mcts, r_oracle, d_oracle;
+  return MuPlayer(mcts, μnetwork.h, μnetwork.g;
 	niters=params.num_iters_per_turn,
 	τ=params.temperature,
 	timeout=timeout)
@@ -85,7 +85,7 @@ function AlphaZero.think(p::MuPlayer, game)
 	return actions, π_target, rootvalue
 end
 
-function play_game(gspec, player::MuPlayer; flip_probability=0.)
+function AlphaZero.play_game(gspec, player::MuPlayer; flip_probability=0.)
   game = GI.init(gspec)
   trace = MuTrace(GI.current_state(game))
   while true

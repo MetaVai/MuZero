@@ -9,9 +9,10 @@
 /docs/build/
 /docs/site/
 
+tensorboard_logs
 sessions
 archive
 
 TODO.md
 
-.vscode/*
+.vscode

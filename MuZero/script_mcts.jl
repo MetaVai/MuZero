@@ -68,19 +68,19 @@ sim=SimParams(
     flip_probability=0.,
     alternate_colors=false)
 
-  mcts_params = MctsParams(
+  mcts = MctsParams(
     num_iters_per_turn=400,
     cpuct=1.0,
     temperature=ConstSchedule(1.0),
     dirichlet_noise_ϵ=0.2,
     dirichlet_noise_α=1.0)
 
-  self_play_params = (; sim, mcts_params)
+  self_play = (; sim, mcts)
 
 
   #memory = CircularBuffer{Trace{GI.state_type(gspec)}}(1024)
 
-  μparams = MuParams(self_play_params, 1, 100)
+  μparams = MuParams(self_play, 1, 100)
 
   env = MuEnv(gspec, μparams, nns)
 
@@ -99,19 +99,19 @@ for n in n_workers
     flip_probability=0.,
     alternate_colors=false)
 
-  mcts_params = MctsParams(
+  mcts = MctsParams(
     num_iters_per_turn=400,
     cpuct=1.0,
     temperature=ConstSchedule(1.0),
     dirichlet_noise_ϵ=0.2,
     dirichlet_noise_α=1.0)
 
-  self_play_params = (; sim, mcts_params)
+  self_play = (; sim, mcts)
 
 
   #memory = CircularBuffer{Trace{GI.state_type(gspec)}}(1024)
 
-  μparams = MuParams(self_play_params, 1, 100)
+  μparams = MuParams(self_play, 1, 100)
 
   env = MuEnv(gspec, μparams, nns)
 

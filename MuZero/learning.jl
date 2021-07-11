@@ -125,6 +125,7 @@ function losses(nns, hyper, (X, A_mask, As, Ps, Vs, Rs))
   end
   Lreg = iszero(creg) ? zero(Lv) : creg * sum(sum(w.^2) for w in regularized_params(nns))
   L = Lp + Lv + Lreg
+  Zygote.@ignore @info "Loss" loss_total=L loss_policy=Lp loss_value=Lv loss_reg_params=Lreg 
   return (L, Lp, Lv, Lreg)
 end
 

@@ -1,8 +1,9 @@
 using DataStructures:CircularBuffer
 
 struct MuParams
-  self_play_params
+  self_play
   learning_params
+  arena
   num_iters::Int
   mem_buffer_size
 end
@@ -42,32 +43,25 @@ mutable struct MuEnv{GameSpec,Network,State}
 end
 
 #TODO add simulator, make_oracles() ... 
-function simulate(gspec::AbstractGameSpec, p)
+function simulate(simulator::Simulator, gspec::AbstractGameSpec, p)
   total_simulated = Threads.Atomic{Int64}(0)
-  return @withprogress name="self play step" AlphaZero.Util.mapreduce(1:p.num_games, p.num_workers, vcat, []) do
-  # results = map(1:p.num_games) do i
-    # make oracles
-    representation_oracle = deepcopy(env.bestnns.h)
-    # representation_oracle = CachedOracle(representation_oracle, Dict{Tuple{typeof(hidden_state), Int},Tuple{Float64, typeof(hidden_state)}}())
-    dynamics_oracle = deepcopy(env.bestnns.g)
-    prediction_oracle = deepcopy(env.bestnns.f)
-    # make player
-    player = MuPlayer(gspec, prediction_oracle, representation_oracle, dynamics_oracle,
-                        mcts_params; S=Vector{Float32})
-
+  return @withprogress name="simulating" AlphaZero.Util.mapreduce(1:p.num_games, p.num_workers, vcat, []) do
+  # return @withprogress map(1:p.num_games) do
+    oracles = simulator.make_oracles()
+    player = simulator.make_player(oracles)
     function simulate_game(sim_id)
       # worker_sim_id += 1
       # Switch players' colors if necessary: "_pf" stands for "possibly flipped"
-      if isa(player, TwoPlayers) && p.alternate_colors
-        colors_flipped = sim_id % 2 == 1
-        player_pf = colors_flipped ? flipped_colors(player) : player
-      else
-        colors_flipped = false
-        player_pf = player
-      end
+      # if isa(player, TwoPlayers) && p.alternate_colors
+      #   colors_flipped = sim_id % 2 == 1
+      #   player_pf = colors_flipped ? flipped_colors(player) : player
+      # else
+      #   colors_flipped = false
+      #   player_pf = player
+      # end
       player_pf = player
       # Play the game and generate a report
-      trace = play_game(gspec, player_pf, flip_probability=p.flip_probability)
+      trace = AlphaZero.play_game(gspec, player_pf, flip_probability=p.flip_probability)
       # report = simulator.measure(trace, colors_flipped, player)
       # Reset the player periodically
       # if !isnothing(p.reset_every) && worker_sim_id % p.reset_every == 0
@@ -76,20 +70,50 @@ function simulate(gspec::AbstractGameSpec, p)
       # Signal that a game has been simulated
       # game_simulated() 
       Threads.atomic_add!(total_simulated, 1) # don't know if there will be tension between adding, and getting number, but compiler should speedup it, so prevents it
-      @logprogress total_simulated[] / p.num_games
+      @logprogress total_simulated[] / p.num_games #progressbar
+      # @info "selfplay progress" total_simulated[] / p.num_games
       return trace
     end
     return (process = simulate_game, terminate = (() -> nothing))
   end
 end
 
+#####
+##### Evaluating networks
+#####
+
+# Have a "contender" network play against a "baseline" network (params::ArenaParams)
+# Return (rewards vector, redundancy)
+# Version for two-player games 
+#TODO incorporate nns pit
+function pit_networks(gspec, contender, baseline, params, handler)
+  make_oracles() = (
+    deepcopy(contender),
+    deepcopy(baseline))
+  simulator = Simulator(make_oracles, record_trace) do oracles
+    white = MuPlayer(gspec, oracles[1], params.mcts)
+    black = MuPlayer(gspec, oracles[2], params.mcts)
+    return TwoPlayers(white, black)
+  end
+  samples = simulate(
+    simulator, gspec, params.sim)
+  return rewards_and_redundancy(samples, gamma=params.mcts.gamma) #TODO create simple analyzer function
+end
+
+
+##### Main training loop
+
 function self_play_step!(env::MuEnv)
-  p = env.params.self_play_params.sim
-  # @info Progress(1)
-  traces = simulate(gspec, p)
+  params = env.params.self_play
+  make_oracle() = deepcopy(env.bestnns)
+  simulator = Simulator(make_oracle, nothing) do nns
+    return MuPlayer(env.gspec, nns, params.mcts)
+  end
+  traces = simulate(simulator, gspec, params.sim)
+  @info "Self Play Step" lost, draw, won=(count_wins(traces) ./ length(traces))
 
   append!(env.memory, traces)
-  @info "Self Play Step Finished"
+  @info "Self Play Step" stage="finished"
 end
 
 function learning_step!(env::MuEnv)
@@ -98,7 +122,8 @@ function learning_step!(env::MuEnv)
 
   #? symmetries 
 
-  tr = MuTrainer(env.gspec, env.curnns, env.memory, env.params.learning_params, Flux.ADAM())
+  #TODO Trainer as separate actor
+  tr = MuTrainer(env.gspec, env.curnns, env.memory, env.params.learning_params, Flux.ADAM(lp.learning_rate))
   nbatches = lp.batches_per_checkpoint
 
   @progress "learning step (epoch)" for _ in 1:lp.num_checkpoints
@@ -106,20 +131,24 @@ function learning_step!(env::MuEnv)
     if isnothing(ap)
       # env.curnns = tr.nns # trainer operate on shallow copy of curnns
       env.bestnns = deepcopy(env.curnns)
-      @info "nns replaced" nns_replaced=true
+      # @info "nns replaced" nns_replaced=true
     else
     end
   end
-  @info "Learning Step finished"
+  @info "Learning Step" stage="finished"
 end
 
-function train!(env::MuEnv)
+# one machine - learning
+# others - self_play
+#? tasks while-loop for async (and distributed) (pure Julia, Actors.jl, Jun's Oolong.jl, Dagger.jl)
+function train!(env::MuEnv; benchmark=[])
   while env.itc < env.params.num_iters
-    @info "Starting Iteration" env.itc
-    _, tsp = @timed self_play_step!(env) #TODO create custom time loggers
-    _, tl = @timed learning_step!(env)
-    @info "Iteration Finished" env.itc tsp tl
+    @info "Training" stage="starting iteration" env.itc
+    _, time_self_play = @timed self_play_step!(env) #TODO create custom time loggers
+    _, time_learning = @timed learning_step!(env)
+    @info "Training" stage="iteration finished" env.itc time_self_play time_learning
+    run_duel(env, benchmark) # compare MuZero with pure MCTS or other algorithm 
     env.itc += 1
   end
-  @info "Training Finished"
+  @info "Training" stage="Finished"
 end
