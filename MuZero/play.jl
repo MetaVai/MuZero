@@ -1,34 +1,41 @@
-struct MuPlayer{M,R,D} <: AbstractPlayer 
-	mcts :: M
-	representation_oracle :: R
-	dynamics_oracle :: D
-	niters :: Int
-	timeout :: Union{Float64, Nothing}
-	τ :: AbstractSchedule{Float64} # Temperature
-	function MuPlayer(mcts::MCTS.Env, representation_oracle, dynamics_oracle; τ, niters, timeout=nothing)
-		@assert niters > 0
-		@assert isnothing(timeout) || timeout > 0
-		new{typeof(mcts), typeof(representation_oracle), typeof(dynamics_oracle)}(mcts, representation_oracle, dynamics_oracle, niters, timeout, τ)
-	end
-end
-
-function MuPlayer(
-	game_spec::AbstractGameSpec, μnetwork::MuNetwork, params::MctsParams; timeout=nothing, S=Vector{Float32}) # TODO automateS
-  mcts = MCTS.Env(game_spec, μnetwork.f,
+# TODO move this constructor to mcts.jl 
+function MCTS.Env(gspec::AbstractGameSpec, oracle, params::MctsParams; S=nothing)
+	return MCTS.Env(gspec, oracle;
 	gamma=params.gamma,
 	cpuct=params.cpuct,
 	noise_ϵ=params.dirichlet_noise_ϵ,
 	noise_α=params.dirichlet_noise_α,
 	prior_temperature=params.prior_temperature,
 	S=S)
-  return MuPlayer(mcts, μnetwork.h, μnetwork.g;
-	niters=params.num_iters_per_turn,
-	τ=params.temperature,
+end
+
+struct MuPlayer{P,D,R} <: AbstractPlayer 
+	# mcts :: M
+	prediction_oracle :: P
+	dynamics_oracle :: D
+	representation_oracle :: R
+	mcts_params :: MctsParams
+	# niters :: Int
+	timeout :: Union{Float64, Nothing}
+	# τ :: AbstractSchedule{Float64} # Temperature
+	# function MuPlayer(mcts::MCTS.Env, representation_oracle, dynamics_oracle; τ, niters, timeout=nothing)
+	function MuPlayer(f, g, h, mcts_params::MctsParams; timeout=nothing)
+		@assert mcts_params.num_iters_per_turn > 0
+		@assert isnothing(timeout) || timeout > 0
+		new{typeof(f), typeof(g), typeof(h)}(f, g, h, mcts_params, timeout)
+	end
+end
+
+function MuPlayer(
+	μnetwork::MuNetwork, params::MctsParams; timeout=nothing)
+  return MuPlayer(μnetwork.f, μnetwork.g, μnetwork.h, params;
+	# niters=params.num_iters_per_turn,
+	# τ=params.temperature,
 	timeout=timeout)
 end
 
 function player_temperature(p::Union{MctsPlayer,MuPlayer}, game, turn)
-	return p.τ[turn]
+	return p.mcts_params.temperature[turn]
   end
   
 function reset_player!(player::Union{MctsPlayer,MuPlayer})
@@ -46,42 +53,39 @@ end
 # ? does rootinfo.vest should be there, or just
 # ? sum without γ
 # compute_rootvalue(rootinfo::MCTS.StateInfo, γ) = rootinfo.Vest + γ*sum([st.W for st in rootinfo.stats])
-compute_rootvalue(ri::MCTS.StateInfo, γ) = max([st.W/st.N for st in ri.stats])
-compute_rootvalue(ri::MCTS.StateInfo, γ) = sum([st.W for st in ri.stats]) / MCTS.Ntot(ri)
-#TODO compare max and sum
+compute_rootvalue(ri::MCTS.StateInfo, γ) = max((st.W/st.N for st in ri.stats))
+compute_rootvalue(ri::MCTS.StateInfo, γ) = sum((st.W for st in ri.stats)) / MCTS.Ntot(ri)
+# TODO compare max and sum
 
 function AlphaZero.think(p::MuPlayer, game)
+	#initial inference:  h(o) → s⁰,  f(s⁰) → (p⁰,v⁰)
 	rootstate = p.representation_oracle(GI.current_state(game))
-
-	(P₀, V₀) = p.mcts.oracle(rootstate)
+	(P⁰, V⁰) = p.prediction_oracle(rootstate)
 	actions_mask = GI.actions_mask(game)
-	P₀ = normalize_p(P₀, actions_mask)[actions_mask]
-	# TODO create new mcts, reset mcts, make more clear MCTS.reset!()
-	MCTS.reset!(p.mcts)
-	p.mcts.tree[rootstate] = MCTS.init_state_info(P₀,V₀,p.mcts.prior_temperature)
+	P⁰ = normalize_p(P⁰, actions_mask)[actions_mask]
+
+	mcts = MCTS.Env(GI.spec(game), p.prediction_oracle, p.mcts_params, S=typeof(rootstate))
+	mcts.tree[rootstate] = MCTS.init_state_info(P⁰,V⁰,mcts.prior_temperature)
 
 	mugame = MuGameEnvWrapper(
 		game,
 		#	CachedOracle(oracle, Statetype, Actiontype, Rewardtype)
-		CachedOracle(p.dynamics_oracle,typeof(rootstate),GI.action_type(p.mcts.gspec),Float64),
+		CachedOracle(p.dynamics_oracle,typeof(rootstate),GI.action_type(mcts.gspec),Float64),
 		rootstate, 
-		true,
+		true, #isroot
 		GI.white_playing(game),
 		0.)
-
+	niters = p.mcts_params.num_iters_per_turn - 1 # -1, because (P⁰,V⁰) is already there
 	if isnothing(p.timeout) # Fixed number of MCTS simulations
-		MCTS.explore!(p.mcts, mugame, p.niters-1) # -1, because (P₀,V₀) is already there
+		MCTS.explore!(mcts, mugame, niters) 
 	else # Run simulations until timeout
 		start = time()
 		while time() - start < p.timeout
-		MCTS.explore!(p.mcts, mugame, p.niters-1)
+		MCTS.explore!(mcts, mugame, niters)
 		end
 	end
-	rootvalue = compute_rootvalue(p.mcts.tree[rootstate], p.mcts.gamma)
-	# @info rootvalue	
-	# @info p.mcts.tree[rootstate]
-	# rootvalue = 0.0
-	actions, π_target = MCTS.policy(p.mcts, mugame)
+	rootvalue = compute_rootvalue(mcts.tree[rootstate], mcts.gamma)
+	actions, π_target = MCTS.policy(mcts, mugame)
 	return actions, π_target, rootvalue
 end
 
@@ -100,6 +104,6 @@ function AlphaZero.play_game(gspec, player::MuPlayer; flip_probability=0.)
     π_sample = apply_temperature(π_target, τ)
     a = actions[Util.rand_categorical(π_sample)]
     GI.play!(game, a)
-    push!(trace, π_target, GI.white_reward(game), GI.current_state(game), a, rootvalue)
+    push!(trace, π_target, GI.white_reward(game), GI.current_state(game), a, rootvalue) # pᵏ, rᵏ, sᵏ, aᵏ, vᵏ
   end
 end

@@ -5,28 +5,28 @@ import Flux
 import LinearAlgebra
 LinearAlgebra.BLAS.set_num_threads(1)
 
-include("mu_game_wrapper.jl")
-include("network.jl")
-include("trace.jl")
-include("play.jl")
-include("training.jl")
-include("learning.jl")
-include("benchmark.jl")
+include("../mu_game_wrapper.jl")
+include("../network.jl")
+include("../trace.jl")
+include("../play.jl")
+include("../training.jl")
+include("../learning.jl")
+include("../benchmark.jl")
 
 tblogger=TBLogger("tensorboard_logs/run", min_level=Logging.Info)
 
 gspec = Examples.games["tictactoe"]
 
 μNetworkHP = MuNetworkHP(gspec,
-  PredictionHP(hiddenstate_shape=32, width=512, depth_common=4),
-  DynamicsHP(hiddenstate_shape=32, width=512, depth_common=4),
-  RepresentationHP(width=512, depth=4, hiddenstate_shape=32))
+  PredictionHP(hiddenstate_shape=32, width=256, depth_common=4),
+  DynamicsHP(hiddenstate_shape=32, width=256, depth_common=4),
+  RepresentationHP(width=256, depth=2, hiddenstate_shape=32))
 μNetworkHP = MuNetworkHP(gspec,
   PredictionHP(hiddenstate_shape=32, width=64, depth_common=4),
   DynamicsHP(hiddenstate_shape=32, width=64, depth_common=4),
   RepresentationHP(width=64, depth=4, hiddenstate_shape=32))
 
-n=4
+n=1
 self_play = (;
   sim=SimParams(
     num_games=512,
@@ -65,13 +65,13 @@ learning_params = (;
   discount=0.997,
   l2_regularization=1e-4,
   loss_computation_batch_size=64,
-  batches_per_checkpoint =256,
-  num_checkpoints=4,
+  batches_per_checkpoint=512,
+  num_checkpoints=1,
   learning_rate=0.003,
   momentum=0.9)
 
 benchmark_sim = SimParams(
-    num_games=200,
+    num_games=100,
     num_workers=4,
     batch_size=4,
     use_gpu=false,
@@ -91,6 +91,7 @@ benchmark = [
 
   env = MuEnv(gspec, μparams, MuNetwork(μNetworkHP))
   with_logger(tblogger) do 
+    @info "params" params=μparams
     train!(env; benchmark=benchmark) 
   end
   train!(env)

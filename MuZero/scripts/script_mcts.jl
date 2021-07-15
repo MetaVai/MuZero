@@ -2,12 +2,12 @@ using Base: Float64
 using AlphaZero
 using ProgressLogging
 
-include("mu_game_wrapper.jl")
-include("network.jl")
-include("trace.jl")
-include("play.jl")
+include("../mu_game_wrapper.jl")
+include("../network.jl")
+include("../trace.jl")
+include("../play.jl")
 #include("memory.jl")
-include("training.jl")
+include("../training.jl")
 
 # experiment = Examples.experiments["tictactoe"]
 # session = Session(experiment)

@@ -8,6 +8,7 @@ sample_position(trace) = rand(1:length(trace))
 
 # TODO comments and documentation
 #! wp - is white playing
+# TODO debug indexes (sᵏ⁻¹, aᵏ) are index 1
 function make_target(gspec, trace, state_idx, hyper)
   Ksteps = hyper.num_unroll_steps
   td_steps = hyper.td_steps
@@ -74,17 +75,16 @@ function make_target(gspec, trace, state_idx, hyper)
 end
 
 function sample_batch(gspec, memory, hyper)
-  traces = [sample_trace(memory) for _ in 1:hyper.loss_computation_batch_size] 
-  trace_pos_idxs = [sample_position(t) for t in traces]
-  samples = [make_target(gspec, t, i, hyper)
-              for (t,i) in zip(traces, trace_pos_idxs)]
+  traces = [sample_trace(memory) for _ in 1:hyper.loss_computation_batch_size]
+  trace_pos_idxs = (sample_position(t) for t in traces)
+  samples = (make_target(gspec, t, i, hyper) for (t,i) in zip(traces, trace_pos_idxs))
 
-  X       = Flux.batch(smpl.x for smpl in samples) #? isn't it quicker to iterate once 
-  A_mask  = Flux.batch(smpl.a_mask for smpl in samples)
-  As      = Flux.batch(smpl.as for smpl in samples)
-  Ps      = Flux.batch(smpl.ps for smpl in samples)
-  Vs      = Flux.batch(smpl.vs for smpl in samples)
-  Rs      = Flux.batch(smpl.rs for smpl in samples)
+  X       = Flux.batch(smpl.x       for smpl in samples)
+  A_mask  = Flux.batch(smpl.a_mask  for smpl in samples)
+  As      = Flux.batch(smpl.as      for smpl in samples)
+  Ps      = Flux.batch(smpl.ps      for smpl in samples)
+  Vs      = Flux.batch(smpl.vs      for smpl in samples)
+  Rs      = Flux.batch(smpl.rs      for smpl in samples)
   f32(arr) = convert(AbstractArray{Float32}, arr)
   #// X, A_mask, As, Ps, Vs, Rs = map(f32, (X, A_mask, As, Ps, Vs, Rs))
   #// return (; X, A_mask, As, Ps, Vs, Rs)
@@ -94,7 +94,7 @@ end
 # TODO add assertions about sizes
 function losses(nns, hyper, (X, A_mask, As, Ps, Vs, Rs))
   prediction, dynamics, representation = nns.f, nns.g, nns.h
-  creg =hyper.l2_regularization #TODO add network params loss
+  creg = hyper.l2_regularization
   Ksteps = hyper.num_unroll_steps
 
   lossₚ(p̂, p) = Flux.Losses.crossentropy(p̂, p) #TODO move to hyper
@@ -111,10 +111,9 @@ function losses(nns, hyper, (X, A_mask, As, Ps, Vs, Rs))
   Lv = lossᵥ(V̂₀, @view Vs[1:1, :])
   Lr = zero(Lv) # starts at next step (see MuZero paper appendix)
   
-  #TODO clear up loop 2:Ksteps
   # recurrent inference 
   for i in 2:Ksteps
-    A = As[i-1,:]
+    A = As[i-1,:] #? check if index isn't shifted
     R̂, Hiddenstate = forward(dynamics, Hiddenstate, A) # obtain next hiddenstate
     P̂, V̂ = forward(prediction, Hiddenstate)
     # scale loss so that the overall weighting of the recurrent_inference (g,f nns)
@@ -144,7 +143,7 @@ function μtrain!(nns, loss, data, opt)
     l, gs = lossgrads(ps) do
       loss(d...)
     end
-    # @info "loss" i l # TODO logging into tensorboard
+    # @info "loss" i l
     Flux.update!(opt, ps, gs)
   end
 end
@@ -160,7 +159,7 @@ end
 function update_weights!(tr::MuTrainer, n)
   L(batch...) = losses(tr.nns, tr.hyper, batch)[1]
   #? move computing samples into Trainer constructor
-  samples = [sample_batch(tr.gspec, tr.memory, tr.hyper) for _ in 1:n]
+  samples = (sample_batch(tr.gspec, tr.memory, tr.hyper) for _ in 1:n)
   # opt = tr.hyper.opt_recipe()
   μtrain!(tr.nns, L, samples, tr.opt)
   #? GC 

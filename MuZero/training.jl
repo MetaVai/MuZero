@@ -42,11 +42,12 @@ mutable struct MuEnv{GameSpec,Network,State}
   end
 end
 
-#TODO add simulator, make_oracles() ... 
+
+# simulate `num_workers` games on one machine using `Threads.nthreads()` Threads
 function simulate(simulator::Simulator, gspec::AbstractGameSpec, p)
   total_simulated = Threads.Atomic{Int64}(0)
   return @withprogress name="simulating" AlphaZero.Util.mapreduce(1:p.num_games, p.num_workers, vcat, []) do
-  # return @withprogress map(1:p.num_games) do
+  # for _ in 1:p.num_games
     oracles = simulator.make_oracles()
     player = simulator.make_player(oracles)
     function simulate_game(sim_id)
@@ -70,11 +71,12 @@ function simulate(simulator::Simulator, gspec::AbstractGameSpec, p)
       # Signal that a game has been simulated
       # game_simulated() 
       Threads.atomic_add!(total_simulated, 1) # don't know if there will be tension between adding, and getting number, but compiler should speedup it, so prevents it
-      @logprogress total_simulated[] / p.num_games #progressbar
+      @logprogress total_simulated[] / p.num_games #progressbar #! uncomment
       # @info "selfplay progress" total_simulated[] / p.num_games
       return trace
     end
     return (process = simulate_game, terminate = (() -> nothing))
+    # simulate_game(1)
   end
 end
 
@@ -86,19 +88,19 @@ end
 # Return (rewards vector, redundancy)
 # Version for two-player games 
 #TODO incorporate nns pit
-function pit_networks(gspec, contender, baseline, params, handler)
-  make_oracles() = (
-    deepcopy(contender),
-    deepcopy(baseline))
-  simulator = Simulator(make_oracles, record_trace) do oracles
-    white = MuPlayer(gspec, oracles[1], params.mcts)
-    black = MuPlayer(gspec, oracles[2], params.mcts)
-    return TwoPlayers(white, black)
-  end
-  samples = simulate(
-    simulator, gspec, params.sim)
-  return rewards_and_redundancy(samples, gamma=params.mcts.gamma) #TODO create simple analyzer function
-end
+# function pit_networks(gspec, contender, baseline, params, handler)
+#   make_oracles() = (
+#     deepcopy(contender),
+#     deepcopy(baseline))
+#   simulator = Simulator(make_oracles, record_trace) do oracles
+#     white = MuPlayer(gspec, oracles[1], params.mcts)
+#     black = MuPlayer(gspec, oracles[2], params.mcts)
+#     return TwoPlayers(white, black)
+#   end
+#   samples = simulate(
+#     simulator, gspec, params.sim)
+#   return rewards_and_redundancy(samples, gamma=params.mcts.gamma) #TODO create analyzer function
+# end
 
 
 ##### Main training loop
@@ -107,13 +109,14 @@ function self_play_step!(env::MuEnv)
   params = env.params.self_play
   make_oracle() = deepcopy(env.bestnns)
   simulator = Simulator(make_oracle, nothing) do nns
-    return MuPlayer(env.gspec, nns, params.mcts)
+    return MuPlayer(nns, params.mcts)
   end
   traces = simulate(simulator, gspec, params.sim)
-  @info "Self Play Step" lost, draw, won=(count_wins(traces) ./ length(traces))
+  # @info "Self Play Step" lost, draw, won=(count_wins(traces) ./ length(traces))
 
   append!(env.memory, traces)
-  @info "Self Play Step" stage="finished"
+  @info "Self Play Step" stage="finished" lost, draw, won=(count_wins(traces)./length(traces))
+
 end
 
 function learning_step!(env::MuEnv)
