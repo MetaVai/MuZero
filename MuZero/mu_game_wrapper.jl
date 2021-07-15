@@ -1,26 +1,21 @@
 #* Wrapper of GameInterface
-# redirects MCTS calls to MuNetwork
+# redirects AlphaZero.MCTS calls to MuNetwork
 
-import StaticArrays
-using Base: @kwdef
-#pseudocode 
-@kwdef mutable struct Representation
-  nn = nothing
+struct AlphaRepresentation
 end
 
-@kwdef mutable struct Dynamics
+struct AlphaDynamics
   gspec 
-  nn = nothing
 end
 
 #AlphaZero-like behaviour 
-function (representation_h::Representation)(state)
+function (representation_h::AlphaRepresentation)(state)
   hidden_state = state 
   return hidden_state
 end
 
 #AlphaZero-like behaviour 
-function (dynamics_g::Dynamics)(hidden_state, action)
+function (dynamics_g::AlphaDynamics)(hidden_state, action)
   game_g = GI.init(dynamics_g.gspec, hidden_state)
   GI.play!(game_g, action)
   reward = GI.white_reward(game_g)
@@ -31,14 +26,14 @@ end
 # cache oracle (nn) results, so it can be quickly obtained without re-running network
 struct CachedOracle{O, K, V}
   oracle :: O
-  lookuptable :: Dict{K,V} # Dict{Tuple{typeof(hidden_state), Int},Tuple{Float64, typeof(hidden_state)}}()
+  lookuptable :: Dict{K,V}
 end
 
 # oracle, typeof(State), typeof(Action), typeof(Reward) - used with dynamics
-function CachedOracle(oracle, S, A, R)
+function CachedOracle(oracle, S, A=Int, R=Float64)
   return CachedOracle(
     oracle,
-    Dict{Tuple{S,A}, Tuple{R,S}}())
+    Dict{Tuple{S,A}, Tuple{R,S}}()) # (sᵏ⁻¹,aᵏ) => (rᵏ,sᵏ)
 end
 
 function (oracle::CachedOracle)(args...)
@@ -81,13 +76,14 @@ end
 
 GI.white_reward(game::MuGameEnvWrapper) = game.lastreward #vulnerable when call white_reward() before play!()
 
-function GI.clone(game::MuGameEnvWrapper) # make lookuptable shallowcopy, or pass it other way
-  MuGameEnvWrapper(GI.clone(game.game),
-  game.dynamics_oracle,
-  game.curstate,
-  game.isrootstate,
-  game.white_playing,
-  game.lastreward)
+function GI.clone(game::MuGameEnvWrapper)
+  MuGameEnvWrapper(
+    GI.clone(game.game),
+    game.dynamics_oracle,
+    game.curstate,
+    game.isrootstate,
+    game.white_playing,
+    game.lastreward)
 end
 
 
