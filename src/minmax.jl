@@ -110,7 +110,8 @@ function AlphaZero.think(p::Player, game)
     π[winning] .= 1.
   end
   π ./= sum(π)
-  return actions, π
+  v = sum(qs .* π)
+  return actions, π, v
 end
 
 end

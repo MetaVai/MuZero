@@ -1,54 +1,17 @@
 #* Wrapper of GameInterface
 # redirects AlphaZero.MCTS calls to MuNetwork
 
-struct AlphaRepresentation
-end
+"""
+    MuGameEnvWrapper
 
-struct AlphaDynamics
-  gspec 
-end
-
-#AlphaZero-like behaviour 
-function (representation_h::AlphaRepresentation)(state)
-  hidden_state = state 
-  return hidden_state
-end
-
-#AlphaZero-like behaviour 
-function (dynamics_g::AlphaDynamics)(hidden_state, action)
-  game_g = GI.init(dynamics_g.gspec, hidden_state)
-  GI.play!(game_g, action)
-  reward = GI.white_reward(game_g)
-  next_hidden_state = GI.current_state(game_g)
-  return (reward, next_hidden_state)
-end
-
-# cache oracle (nn) results, so it can be quickly obtained without re-running network
-struct CachedOracle{O, K, V}
-  oracle :: O
-  lookuptable :: Dict{K,V}
-end
-
-# oracle, typeof(State), typeof(Action), typeof(Reward) - used with dynamics
-function CachedOracle(oracle, S, A=Int, R=Float64)
-  return CachedOracle(
-    oracle,
-    Dict{Tuple{S,A}, Tuple{R,S}}()) # (sᵏ⁻¹,aᵏ) => (rᵏ,sᵏ)
-end
-
-function (oracle::CachedOracle)(args...)
-  if haskey(oracle.lookuptable, args)
-    answer = oracle.lookuptable[args]
-  else
-    answer = oracle.oracle(args...)
-    oracle.lookuptable[args] = answer
-  end
-  return answer
-end
-
-#naming: dynamics_oracle, representation_oracle 
-# or dynamics_g, representation_h, or just dynamics, representation
-
+Wraper aroud GameEnv that redirects GI calls
+- `game::GI.AbstractGameEnv`  GameEnv that is wrapped
+- `dynamics_oracle`           g(sᵏ⁻¹,aᵏ) -> (rᵏ,sᵏ) that returns reward and next state
+- `curstate`                  current (hidden) state of game
+- `isrootstate::Bool`         whether or not curstate is the root state of MCTS tree
+- `white_playing::Bool`       whether or not white is currently playing
+- `lastreward::Float64`       last reward obtained from dynamics_oracle 
+"""
 mutable struct MuGameEnvWrapper{State, D} <: GI.AbstractGameEnv
   game :: GI.AbstractGameEnv
   dynamics_oracle :: D # g(s,a) -> r,s 
@@ -70,7 +33,7 @@ GI.white_playing(game::MuGameEnvWrapper) = game.white_playing
 function GI.play!(game::MuGameEnvWrapper, action)
   # (R, S) = game.dynamics_oracle(game.curstate, action)
   (game.lastreward, game.curstate) = game.dynamics_oracle(game.curstate, action)
-  game.white_playing = !game.white_playing
+  game.white_playing = !game.white_playing # in future white_playing will consider 1 player games
   game.isrootstate = false
 end
 

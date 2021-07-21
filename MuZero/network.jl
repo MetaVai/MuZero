@@ -35,12 +35,19 @@ function RepresentationNetwork(gspec::AbstractGameSpec, hyper::RepresentationHP)
   outdim = hyper.hiddenstate_shape
   hsize = hyper.width
   hlayers(depth) = [make_dense(hsize, hsize) for i in 1:depth]
-  architecture = Chain(
-    flatten,
-    make_dense(indim, hsize),
-    hlayers(hyper.depth)...,
-    make_dense(hsize, outdim)
-  )
+  if iszero(hyper.depth) # somewhat unintuitive, jump from 1 to 3 layers #? depth-1 
+    architecture = Chain(
+      flatten,
+      make_dense(indim, outdim)
+    )
+  else
+    architecture = Chain(
+      flatten,
+      make_dense(indim, hsize),
+      hlayers(hyper.depth)...,
+      make_dense(hsize, outdim)
+    )
+  end
   RepresentationNetwork(gspec, hyper, architecture)
 end
 
@@ -208,8 +215,8 @@ function PredictionNetwork(gspec::AbstractGameSpec, hyper::PredictionHP)
   PredictionNetwork(gspec, hyper, simplenet.common, simplenet.scalarhead, simplenet.vectorhead)
 end
 
-function forward(nn::PredictionNetwork, hiddenstate_action)
-  c = nn.common(hiddenstate_action)
+function forward(nn::PredictionNetwork, hiddenstate)
+  c = nn.common(hiddenstate)
   v = nn.scalarhead(c)
   p = nn.vectorhead(c)
   return (p, v)
@@ -269,4 +276,9 @@ regularized_params_(l::Flux.Conv) = [l.weight]
 
 function regularized_params(net::MuNetwork)
   return (w for l in Flux.modules(net) for w in regularized_params_(l))
+end
+
+#adhoc
+function regularized_params(net)
+  return (w for l in Flux.modules(net.f.net) for w in regularized_params_(l))
 end

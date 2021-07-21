@@ -30,9 +30,9 @@ function valid_trace(t::MuTrace)
 end
 
 """
-    Base.push!(t::Trace, π, r, s)
+    Base.push!(t::Trace, π, r, s, a, v)
 
-Add a (target policy, reward, new state) quadruple to a trace.
+Add a (target policy, reward, new state, selected action, rootvalue) to a trace.
 """
 function Base.push!(t::MuTrace, π, r, s, a, v)
   push!(t.states, s)
@@ -44,6 +44,11 @@ end
 
 function Base.length(t::MuTrace)
   return length(t.rewards)
+end
+
+
+function total_reward(t::MuTrace, gamma=1.)
+  return sum(gamma^(i-1) * r for (i, r) in enumerate(t.rewards))
 end
 
 # function total_reward(t::Trace, gamma=1.)

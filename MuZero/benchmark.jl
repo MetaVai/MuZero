@@ -1,10 +1,10 @@
 using Base: AlwaysLockedST
 function Benchmark.run(env::MuEnv, eval::AlphaZero.Benchmark.Evaluation)
   # net() = Network.copy(env.bestnns, on_gpu=eval.sim.use_gpu, test_mode=true)
-  net() = deepcopy(env.bestnns)
+  net() = deepcopy(env.bestnns) |> Flux.testmode!
   if isa(eval, Benchmark.Single)
     simulator = Simulator(net, record_trace) do net
-      instantiate(eval.player, env.gspec, net)
+      Benchmark.instantiate(eval.player, env.gspec, net)
     end
   else
     @assert isa(eval, Benchmark.Duel)
@@ -14,25 +14,26 @@ function Benchmark.run(env::MuEnv, eval::AlphaZero.Benchmark.Evaluation)
       return TwoPlayers(player, baseline)
     end
   end
-  traces, elapsed = @timed simulate(
+  samples, elapsed = @timed simulate(
     simulator, env.gspec, eval.sim)
   # gamma = env.params.self_play.mcts.gamma
-  # rewards, redundancy = rewards_and_redundancy(samples, gamma=gamma)
-  lost, draw, won = count_wins(traces) ./ length(traces)
-  @info "Benchmark" lost draw won time=elapsed
-  return lost, draw, won
+  rewards, redundancy = rewards_and_redundancy(samples, gamma=1.0)
+  white_lost, draw, white_won = count_wins(rewards) ./ length(rewards)
+  @info "Benchmark" white_lost draw white_won time=elapsed
+  return white_lost, draw, white_won
 #   return Report.Evaluation(
 #     name(eval), mean(rewards), redundancy, rewards, nothing, elapsed)
 end
 
 struct Mu <: Benchmark.Player
-  params
+  params :: MctsParams
+  # make_oracles # Function make_oracles()
 end
 
 # name(::Mu) = "MuZero"
 
 function Benchmark.instantiate(p::Mu, gspec::AbstractGameSpec, nns)
-  return MuPlayer(gspec, nns, p.params)
+  return MuPlayer(nns, p.params)
 end
 
 function run_duel(env, benchmark)
@@ -64,10 +65,9 @@ end
 #     benchmark_sim)]
 
 
-function count_wins(traces)
-  results = (last(t.rewards) for t in traces)
-  lost, draw, won = (count(==(i), results) for i in -1:1)
-  @assert sum([lost, draw, won]) == length(results)
+function count_wins(rewards)
+  lost, draw, won = (count(==(i), rewards) for i in -1:1)
+  @assert sum([lost, draw, won]) == length(rewards)
   # @info "Benchmark" lost draw won
   return lost, draw, won
 end

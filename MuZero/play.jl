@@ -9,14 +9,24 @@ function MCTS.Env(gspec::AbstractGameSpec, oracle, params::MctsParams; S=nothing
 	S=S)
 end
 
+"""
+		MuPlayer{P,D,R} <: AbstractPlayer
+
+- `prediction_oracle` 		f(sᵏ) -> (pᵏ,vᵏ)
+- `dynamics_oracle`				g(sᵏ⁻¹,aᵏ) -> (rᵏ,sᵏ)
+- `representation_oracle` h(o) -> (s⁰)
+- `mcts_params::MctsParams`
+- `timeout::Union{Float64, Nothing}` time that MCTS has for thinking
+		nothing means infinite (till num_iters_per_turn ends)
+"""
 struct MuPlayer{P,D,R} <: AbstractPlayer 
 	# mcts :: M
 	prediction_oracle :: P
 	dynamics_oracle :: D
 	representation_oracle :: R
 	mcts_params :: MctsParams
-	# niters :: Int
 	timeout :: Union{Float64, Nothing}
+	# niters :: Int
 	# τ :: AbstractSchedule{Float64} # Temperature
 	# function MuPlayer(mcts::MCTS.Env, representation_oracle, dynamics_oracle; τ, niters, timeout=nothing)
 	function MuPlayer(f, g, h, mcts_params::MctsParams; timeout=nothing)
@@ -26,21 +36,22 @@ struct MuPlayer{P,D,R} <: AbstractPlayer
 	end
 end
 
+# constructor with MuNetwork
 function MuPlayer(
-	μnetwork::MuNetwork, params::MctsParams; timeout=nothing)
+	μnetwork::Union{MuNetwork,NamedTuple}, params::MctsParams; timeout=nothing)
   return MuPlayer(μnetwork.f, μnetwork.g, μnetwork.h, params;
 	# niters=params.num_iters_per_turn,
 	# τ=params.temperature,
 	timeout=timeout)
 end
 
-function player_temperature(p::Union{MctsPlayer,MuPlayer}, game, turn)
+function AlphaZero.player_temperature(p::MuPlayer, game, turn)
 	return p.mcts_params.temperature[turn]
-  end
-  
-function reset_player!(player::Union{MctsPlayer,MuPlayer})
-	MCTS.reset!(player.mcts)
 end
+  
+# function reset_player!(player::Union{MctsPlayer,MuPlayer})
+# 	MCTS.reset!(player.mcts)
+# end
 
 # normalize policy - probs of legal actions sum up to 1, and illegals are 0
 function normalize_p(P, actions_mask)
@@ -57,6 +68,11 @@ compute_rootvalue(ri::MCTS.StateInfo, γ) = max((st.W/st.N for st in ri.stats))
 compute_rootvalue(ri::MCTS.StateInfo, γ) = sum((st.W for st in ri.stats)) / MCTS.Ntot(ri)
 # TODO compare max and sum
 
+"""
+		think(::MuPlayer, game)
+
+Return avaliable actions, policy, and rootvalue
+"""
 function AlphaZero.think(p::MuPlayer, game)
 	#initial inference:  h(o) → s⁰,  f(s⁰) → (p⁰,v⁰)
 	rootstate = p.representation_oracle(GI.current_state(game))
@@ -89,7 +105,13 @@ function AlphaZero.think(p::MuPlayer, game)
 	return actions, π_target, rootvalue
 end
 
-function AlphaZero.play_game(gspec, player::MuPlayer; flip_probability=0.)
+"""
+		play_game(gspec, ::MuPlayer)
+
+overloaded AlphaZero.play_game() function, 
+that additionally push selected action, and rootvalue into trace
+"""
+function AlphaZero.play_game(gspec, player::Union{MuPlayer,MinMax.Player}; flip_probability=0.)
   game = GI.init(gspec)
   trace = MuTrace(GI.current_state(game))
   while true
@@ -100,7 +122,8 @@ function AlphaZero.play_game(gspec, player::MuPlayer; flip_probability=0.)
       GI.apply_random_symmetry!(game)
     end
     actions, π_target, rootvalue = think(player, game)
-    τ = player_temperature(player, game, length(trace))
+		rootvalue = GI.white_playing(game) ? rootvalue : -rootvalue# ? reversing rootvalue wp?
+    τ = AlphaZero.player_temperature(player, game, length(trace))
     π_sample = apply_temperature(π_target, τ)
     a = actions[Util.rand_categorical(π_sample)]
     GI.play!(game, a)
