@@ -108,10 +108,12 @@ function losses(nns, hyper, (X, A_mask, As, Ps, Vs, Rs))
   P̂⁰ = normalize_p(P̂⁰, A_mask)
   # R̂⁰ = zero(V̂⁰)
 
-  Lp = lossₚ(P̂⁰, Ps[ : ,1,:]) # scale=1
-  Lv = lossᵥ(V̂⁰, Vs[1:1,:])
-  Lr = zero(Lv) # starts at next step (see MuZero paper appendix)
+  scale_initial = iszero(Ksteps) ? 1f0 : 0.5f0
+  Lp = scale_initial * lossₚ(P̂⁰, Ps[ : ,1,:]) # scale=1
+  Lv = scale_initial * lossᵥ(V̂⁰, Vs[1:1,:])
+  Lr = scale_initial * zero(Lv) # starts at next step (see MuZero paper appendix)
   
+  scale_recurrent = iszero(Ksteps) ? nothing : 0.5f0 / Ksteps #? instead of constant scale, maybe 2^(-i+1)
   # recurrent inference 
   for i in 2:Ksteps+1
     A = As[i-1,:] 
@@ -119,10 +121,9 @@ function losses(nns, hyper, (X, A_mask, As, Ps, Vs, Rs))
     P̂, V̂ = forward(prediction, Hiddenstate) #? should flip V based on players
     # scale loss so that the overall weighting of the recurrent_inference (g,f nns)
     # is equal to that of the initial_inference (h,f nns)
-    scale = 1f0 / Ksteps #? instead of constant scale, maybe 2^(-i+1)
-    Lp += lossₚ(P̂, Ps[ : ,i,:]) * scale #? @view
-    Lv += lossᵥ(V̂, Vs[i:i,:])   * scale 
-    Lr += lossᵣ(R̂, Rs[i:i,:])   * scale
+    Lp += scale_recurrent * lossₚ(P̂, Ps[ : ,i,:]) #? @view
+    Lv += scale_recurrent * lossᵥ(V̂, Vs[i:i,:]) 
+    Lr += scale_recurrent * lossᵣ(R̂, Rs[i:i,:])
   end
   Lreg = iszero(creg) ? zero(Lv) : creg * sum(sum(w.^2) for w in regularized_params(nns))
   L = Lp + Lv + Lreg # + Lr
