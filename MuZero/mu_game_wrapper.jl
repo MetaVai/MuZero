@@ -10,7 +10,7 @@ Wraper aroud GameEnv that redirects GI calls
 - `curstate`                  current (hidden) state of game
 - `isrootstate::Bool`         whether or not curstate is the root state of MCTS tree
 - `white_playing::Bool`       whether or not white is currently playing
-- `lastreward::Float64`       last reward obtained from dynamics_oracle 
+- `lastwr::Float64`           last white reward obtained from dynamics_oracle 
 """
 mutable struct MuGameEnvWrapper{State, D} <: GI.AbstractGameEnv
   game :: GI.AbstractGameEnv
@@ -18,7 +18,7 @@ mutable struct MuGameEnvWrapper{State, D} <: GI.AbstractGameEnv
   curstate :: State
   isrootstate :: Bool
   white_playing :: Bool # MuWrapper changes player each round
-  lastreward :: Float64
+  lastwr :: Float64
 end
 
 GI.game_terminated(game::MuGameEnvWrapper) = false 
@@ -31,13 +31,16 @@ GI.available_actions(game::MuGameEnvWrapper) = game.isrootstate ? GI.available_a
 GI.white_playing(game::MuGameEnvWrapper) = game.white_playing
 
 function GI.play!(game::MuGameEnvWrapper, action)
-  # (R, S) = game.dynamics_oracle(game.curstate, action)
-  (game.lastreward, game.curstate) = game.dynamics_oracle(game.curstate, action)
-  game.white_playing = !game.white_playing # in future white_playing will consider 1 player games
+  # dynamics returns reward from the perspective of last player (rᵂ , sᴮ) <- g(sᵂ, aᵂ)
+  (game.lastwr, game.curstate) = game.dynamics_oracle(game.curstate, action)
+  if GI.two_players(GI.spec(game.game))
+    game.white_playing || (game.lastwr = -game.lastwr) # then it is changed if black was playing and saved as lastwr
+    game.white_playing = !game.white_playing # player change
+  end
   game.isrootstate = false
 end
 
-GI.white_reward(game::MuGameEnvWrapper) = game.lastreward #vulnerable when call white_reward() before play!()
+GI.white_reward(game::MuGameEnvWrapper) = game.lastwr #vulnerable when call white_reward() before play!()
 
 function GI.clone(game::MuGameEnvWrapper)
   MuGameEnvWrapper(
@@ -46,7 +49,7 @@ function GI.clone(game::MuGameEnvWrapper)
     game.curstate,
     game.isrootstate,
     game.white_playing,
-    game.lastreward)
+    game.lastwr)
 end
 
 
