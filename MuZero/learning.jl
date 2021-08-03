@@ -19,7 +19,7 @@ function make_target(gspec, trace, state_idx, hyper)
   observation = trace.states[state_idx]
   x = GI.vectorize_state(gspec, observation) # convert observation to h_nn input
   a_mask = GI.actions_mask(GI.init(gspec, observation))
-  wp = observation.curplayer
+  wp = GI.white_playing(GI.init(gspec, observation))
   # TODO change into staticvector or smth fast - sizehint!
   target_values   = Float64[]         ; sizehint!(target_values, Ksteps+1)
   target_rewards  = Float64[]         ; sizehint!(target_rewards, Ksteps+1)
@@ -37,7 +37,7 @@ function make_target(gspec, trace, state_idx, hyper)
       value = trace.rootvalues[bootstrap_idx] * γ^td_steps
     else
       bootstrap_idx = length(trace)
-      value = 0
+      value = 0.
     end
 
     for (i, reward) in enumerate(trace.rewards[idx:bootstrap_idx])
@@ -49,9 +49,9 @@ function make_target(gspec, trace, state_idx, hyper)
     if idx <= length(trace)
       reward = trace.rewards[idx]
       if GI.two_players(gspec)
-        if !wp
+        if !wp # rewards are stored in a view of white
           value = -value
-          reward = -reward #? wp ? reward : -reward
+          reward = -reward #? wp ? reward : -reward # no flipping in future, but when state is flipped it makes some sense, remember to change GI.white_reward function then too
         end
         wp = !wp
       end  
@@ -67,11 +67,11 @@ function make_target(gspec, trace, state_idx, hyper)
     else
       push!(target_values, 0)
       push!(target_rewards, 0)
-
-      uniform_policy = [1/length(trace.policies[1]) for _ in 1:length(trace.policies[1])]
+      all_actions = GI.actions(gspec)
+      uniform_policy = fill(1/length(all_actions), length(all_actions))
       push!(target_policies, uniform_policy)
       #target_policies = [target_policies uniform_policy]
-      push!(actions, rand(1:length(trace.policies[1])))
+      push!(actions, rand(all_actions))
     end
   end
   return (; x, a_mask, as=actions, vs=target_values, rs=target_rewards, ps=reduce(hcat,target_policies))
@@ -94,7 +94,12 @@ end
 
 lossₚ(p̂, p)::Float32 = Flux.Losses.crossentropy(p̂, p) #TODO move to hyper
 lossᵥ(v̂, v)::Float32 = Flux.Losses.mse(v̂, v)
-lossᵣ(r̂, r)::Float32 = 0f0
+# lossᵣ(r̂, r)::Float32 = 0f0
+lossᵣ(r̂, r)::Float32 = Flux.Losses.mse(r̂, r)
+
+
+# lossᵥ(v̂, v)::Float32 = Flux.Losses.crossentropy(v̂, v)
+# lossᵣ(r̂, r)::Float32 = Flux.Losses.crossentropy(r̂, r)
 
 # TODO add assertions about sizes
 function losses(nns, hyper, (X, A_mask, As, Ps, Vs, Rs))
@@ -109,26 +114,27 @@ function losses(nns, hyper, (X, A_mask, As, Ps, Vs, Rs))
   # R̂⁰ = zero(V̂⁰)
 
   scale_initial = iszero(Ksteps) ? 1f0 : 0.5f0
-  Lp = scale_initial * lossₚ(P̂⁰, Ps[ : ,1,:]) # scale=1
-  Lv = scale_initial * lossᵥ(V̂⁰, Vs[1:1,:])
-  Lr = scale_initial * zero(Lv) # starts at next step (see MuZero paper appendix)
+  Lp = scale_initial * lossₚ(P̂⁰, Ps[:, 1, :]) # scale=1
+  Lv = scale_initial * lossᵥ(V̂⁰, Vs[1:1, :])
+  Lr = zero(Lv) # starts at next step (see MuZero paper appendix)
   
   scale_recurrent = iszero(Ksteps) ? nothing : 0.5f0 / Ksteps #? instead of constant scale, maybe 2^(-i+1)
   # recurrent inference 
-  for i in 2:Ksteps+1
-    A = As[i-1,:] 
+  for k in 1:Ksteps
+    # targets are stored as follows: [A⁰¹ A¹² ...] [P⁰ P¹ ...] [V⁰ V¹ ...] but [R¹ R² ...]
+    A = As[k, :]
     R̂, Hiddenstate = forward(dynamics, Hiddenstate, A) # obtain next hiddenstate
     P̂, V̂ = forward(prediction, Hiddenstate) #? should flip V based on players
     # scale loss so that the overall weighting of the recurrent_inference (g,f nns)
     # is equal to that of the initial_inference (h,f nns)
-    Lp += scale_recurrent * lossₚ(P̂, Ps[ : ,i,:]) #? @view
-    Lv += scale_recurrent * lossᵥ(V̂, Vs[i:i,:]) 
-    Lr += scale_recurrent * lossᵣ(R̂, Rs[i:i,:])
+    Lp += scale_recurrent * lossₚ(P̂, Ps[:, k+1, :]) #? @view
+    Lv += scale_recurrent * lossᵥ(V̂, Vs[k+1:k+1, :])
+    Lr += scale_recurrent * lossᵣ(R̂, Rs[k:k, :])
   end
   Lreg = iszero(creg) ? zero(Lv) : creg * sum(sum(w.^2) for w in regularized_params(nns))
-  L = Lp + Lv + Lreg # + Lr
+  L = Lp + Lv + Lr + Lreg # + Lr
   # L = Lp + Lreg # + Lr
-  Zygote.@ignore @debug "Loss" loss_total=L loss_policy=Lp loss_value=Lv loss_reg_params=Lreg #? check if compute means inside logger is avaliable
+  Zygote.@ignore @info "Loss" loss_total=L loss_policy=Lp loss_value=Lv loss_reward=Lr loss_reg_params=Lreg relative_entropy=Lp-Flux.Losses.crossentropy(Ps, Ps) #? check if compute means inside logger is avaliable
   return (L, Lp, Lv, Lr, Lreg)
 end
 
@@ -144,13 +150,14 @@ end
 function μtrain!(nns, loss, data, opt)
   ps = Flux.params(nns)
   losses = Float32[]
-  # @progress "learning step (checkpoint)" for (i, d) in enumerate(data)
-  for (i, d) in enumerate(data)
+  @progress "learning step (checkpoint)" for (i, d) in enumerate(data)
+  # for (i, d) in enumerate(data)
     l, gs = lossgrads(ps) do
       loss(d...)
     end
     push!(losses, l)
     Flux.update!(opt, ps, gs)
+    @info "debug" η=opt.optim.eta
   end
   @info "Loss" mean_loss_total = mean(losses)
 end
@@ -160,7 +167,7 @@ struct MuTrainer{Network,M}
   nns :: Network # MuNetwork
   memory :: M #? don't know if memory pointer in trainter is good idea
   hyper
-  opt #TODO create opt every update_weights!() from opt_recipe
+  opt
 end
 
 function update_weights!(tr::MuTrainer, n)

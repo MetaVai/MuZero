@@ -1,5 +1,5 @@
-using Base: @kwdef
-using Flux: Chain, Dense, Conv, BatchNorm, SkipConnection, flatten, relu, softmax, onehot, onehotbatch
+using Base: @kwdef, ident_cmp
+using Flux: Chain, Dense, Conv, BatchNorm, SkipConnection, flatten, relu, elu, softmax, onehot, onehotbatch
 
 to_singletons(x) = reshape(x, size(x)..., 1)
 from_singletons(x) = reshape(x, size(x)[1:end-1])
@@ -35,10 +35,11 @@ function RepresentationNetwork(gspec::AbstractGameSpec, hyper::RepresentationHP)
   outdim = hyper.hiddenstate_shape
   hsize = hyper.width
   hlayers(depth) = [make_dense(hsize, hsize) for i in 1:depth]
-  if iszero(hyper.depth) # somewhat unintuitive, jump from 1 to 3 layers #? depth-1 
+  if hyper.depth == -1 # somewhat unintuitive, jump from 1 to 3 layers #? depth-1 
     architecture = Chain(
       flatten,
-      make_dense(indim, outdim)
+      # make_dense(indim, outdim)
+      Dense(indim, outdim)
     )
   else
     architecture = Chain(
@@ -98,26 +99,56 @@ function SimpleNet_(gspec::AbstractGameSpec, hyper::SimpleNetHP_)
     if hyper.use_batch_norm
       Chain(
       Dense(indim, outdim),
-      BatchNorm(outdim, relu, momentum=bnmom))
+      BatchNorm(outdim, elu, momentum=bnmom))
     else
-      Dense(indim, outdim, relu)
+      Dense(indim, outdim, elu)
     end
   end
   indim = hyper.indim
   outdim = hyper.outdim
   hsize = hyper.width
-  hlayers(depth) = [make_dense(hsize, hsize) for i in 1:depth]
-  common = Chain(
-    flatten,
-    make_dense(indim, hsize),
-    hlayers(hyper.depth_common)...)
-  scalarhead = Chain(
-    hlayers(hyper.depth_scalarhead)...,
-    Dense(hsize, 1, tanh))
-  vectorhead = Chain(
-    hlayers(hyper.depth_vectorhead)...,
-    Dense(hsize, outdim),
-    softmax)
+  hlayers(depth) = [make_dense(hsize, hsize) for i in 1:depth] #? 1:depth-1
+  # common = depth_common == -1 ?
+  #   flatten :
+  #   Chain(
+  #     flatten, #?
+  #     make_dense(indim, hsize),
+  #     hlayers(hyper.depth_common)...)
+  # scalarhead = Chain(
+  #   hlayers(hyper.depth_scalarhead)...,
+  #   Dense(hsize, 1, tanh))
+  # vectorhead = Chain(
+  #   hlayers(hyper.depth_vectorhead)...,
+  #   Dense(hsize, outdim),
+  #   softmax)
+  if hyper.depth_common == -1
+    common = identity
+    outcomm = indim
+  else
+    common = Chain(
+      flatten, #? identity
+      make_dense(indim, hsize),
+      hlayers(hyper.depth_common)...)
+    outcomm = hsize
+  end
+  if hyper.depth_scalarhead == -1
+    scalarhead = Dense(outcomm, 1, tanh)
+  else
+    scalarhead = Chain(
+      outcomm != hsize ? make_dense(outcomm, hsize) : identity,
+      hlayers(hyper.depth_scalarhead)...,
+      Dense(hsize, 1, tanh))
+  end
+  if hyper.depth_vectorhead == -1
+    vectorhead = Chain(Dense(outcomm, outdim))
+  else
+    vectorhead = Chain(
+      outcomm != hsize ? make_dense(outcomm, hsize) : identity,
+      hlayers(hyper.depth_vectorhead)...,
+      Dense(hsize, outdim)
+      )
+  end
+
   SimpleNet_(gspec, hyper, common, scalarhead, vectorhead)
 end
 
@@ -128,8 +159,8 @@ end
   hiddenstate_shape :: Int
   width :: Int
   depth_common :: Int
-  depth_vectorhead :: Int = 1
-  depth_scalarhead :: Int = 1
+  depth_vectorhead :: Int = 1 # depth state-head
+  depth_scalarhead :: Int = 1 # depth reward-head
   use_batch_norm :: Bool = false
   batch_norm_momentum :: Float32 = 0.6f0
 end
@@ -162,8 +193,8 @@ function forward(nn::DynamicsNetwork, hiddenstate, action)
   hiddenstate_action = cat(hiddenstate, action_one_hot, dims=1)
   c = nn.common(hiddenstate_action)
   r = nn.scalarhead(c)
-  s₊₁ = nn.vectorhead(c)
-  return (r, s₊₁)
+  s⁺¹ = nn.vectorhead(c)
+  return (r, s⁺¹)
 end
 
 function evaluate(nn::DynamicsNetwork, hiddenstate, action)
@@ -186,8 +217,8 @@ end
   hiddenstate_shape :: Int
   width :: Int
   depth_common :: Int
-  depth_vectorhead :: Int = 1
-  depth_scalarhead :: Int = 1
+  depth_vectorhead :: Int = 1 # depth policy-head
+  depth_scalarhead :: Int = 1 # depth value-head
   use_batch_norm :: Bool = false
   batch_norm_momentum :: Float32 = 0.6f0
 end
@@ -212,7 +243,7 @@ function PredictionNetwork(gspec::AbstractGameSpec, hyper::PredictionHP)
     hyper.use_batch_norm,
     hyper.batch_norm_momentum)
   simplenet = SimpleNet_(gspec,simplenethyper)
-  PredictionNetwork(gspec, hyper, simplenet.common, simplenet.scalarhead, simplenet.vectorhead)
+  PredictionNetwork(gspec, hyper, simplenet.common, simplenet.scalarhead, Chain(simplenet.vectorhead, softmax))
 end
 
 function forward(nn::PredictionNetwork, hiddenstate)

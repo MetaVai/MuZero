@@ -10,6 +10,7 @@
 /docs/site/
 
 tensorboard_logs
+results
 sessions
 archive
 

@@ -1,5 +1,7 @@
 using DataStructures:CircularBuffer
 using Statistics: stdm
+import FileIO, JLD2
+using Dates: now, format
 
 struct MuParams
   self_play
@@ -44,12 +46,14 @@ mutable struct MuEnv{GameSpec,Network,State}
   end
 end
 
-
+#! ORIGINAL 
 # simulate `num_workers` games on one machine using `Threads.nthreads()` Threads
 function simulate(simulator::Simulator, gspec::AbstractGameSpec, p)
   total_simulated = Threads.Atomic{Int64}(0)
-  return @withprogress name="simulating" AlphaZero.Util.mapreduce(1:p.num_games, p.num_workers, vcat, []) do
-  # for _ in 1:p.num_games # easier for debugging
+  # return @withprogress name="simulating" AlphaZero.Util.mapreduce(1:p.num_games, p.num_workers, vcat, []) do
+  # @withprogress for i in 1:p.num_games # easier for debugging
+  # @withprogress name="simulating" map(1:p.num_games) do i # easier for debugging
+  map(1:p.num_games) do i # easier for debugging
     oracles = simulator.make_oracles()
     player = simulator.make_player(oracles)
     function simulate_game(sim_id)
@@ -72,14 +76,54 @@ function simulate(simulator::Simulator, gspec::AbstractGameSpec, p)
       # Signal that a game has been simulated
       # game_simulated() 
       Threads.atomic_add!(total_simulated, 1) # don't know if there will be tension between adding, and getting number, but compiler should speedup it, so prevents it
-      @logprogress total_simulated[] / p.num_games #progressbar #! uncomment
+      # @logprogress total_simulated[] / p.num_games #progressbar #! uncomment
       # @info "selfplay progress" total_simulated[] / p.num_games
       return (; trace, colors_flipped)
     end
-    return (process = simulate_game, terminate = (() -> nothing))
-    # simulate_game(1)
+    # return (process = simulate_game, terminate = (() -> nothing))
+    simulate_game(i)
   end
 end
+
+# #! FOR MINMAX RANDOM STARTING STATES
+# # simulate `num_workers` games on one machine using `Threads.nthreads()` Threads
+# function simulate(simulator::Simulator, gspec::AbstractGameSpec, p)
+#   total_simulated = Threads.Atomic{Int64}(0)
+#   return @withprogress name="simulating" AlphaZero.Util.mapreduce(1:p.num_games, p.num_workers, vcat, []) do
+#   # for _ in 1:p.num_games # easier for debugging
+#     oracles = simulator.make_oracles()
+#     player = simulator.make_player(oracles)
+#     function simulate_game(sim_id)
+#       # worker_sim_id += 1
+#       # Switch players' colors if necessary: "_pf" stands for "possibly flipped"
+#       if isa(player, TwoPlayers) && p.alternate_colors
+#         colors_flipped = sim_id % 2 == 1
+#         player_pf = colors_flipped ? AlphaZero.flipped_colors(player) : player
+#       else
+#         colors_flipped = false
+#         player_pf = player
+#       end
+#       # Play the game and generate a report
+#       rinitstate = rand(AlphaZero.play_game(gspec, RandomPlayer()).states[1:end-1])
+#       # @info rinitstate
+#       trace = AlphaZero.play_game(gspec, player_pf, flip_probability=p.flip_probability, initstate=rinitstate)
+#       # report = simulator.measure(trace, colors_flipped, player)
+#       # Reset the player periodically
+#       # if !isnothing(p.reset_every) && worker_sim_id % p.reset_every == 0
+#       #   reset_player!(player)
+#       # end
+#       # Signal that a game has been simulated
+#       # game_simulated() 
+#       Threads.atomic_add!(total_simulated, 1) # don't know if there will be tension between adding, and getting number, but compiler should speedup it, so prevents it
+#       @logprogress total_simulated[] / p.num_games #progressbar #! uncomment
+#       # @info "selfplay progress" total_simulated[] / p.num_games
+#       return (; trace, colors_flipped)
+#     end
+#     return (process = simulate_game, terminate = (() -> nothing))
+#     # simulate_game(1)
+#   end
+# end
+
 
 #####
 ##### Evaluating networks
@@ -109,10 +153,11 @@ end
 function self_play_step!(env::MuEnv)
   @info "Self Play Step" stage="started"
   params = env.params.self_play
-  make_oracle() = deepcopy(env.bestnns) |> Flux.testmode!
+  make_oracle() = deepcopy(rand([env.bestnns, env.curnns])) |> Flux.testmode!
   simulator = Simulator(make_oracle, record_trace) do nns
     return MuPlayer(nns, params.mcts) 
-    # return MinMax.Player(depth=5, amplify_rewards=false, τ=0.25)
+    # return MinMax.Player(depth=7, amplify_rewards=false, τ=0.25)
+    # return MctsPlayer(gspec, MCTS.RolloutOracle(gspec), params.mcts)
   end
   results = simulate(simulator, gspec, params.sim)
 
@@ -131,11 +176,11 @@ function learning_step!(env::MuEnv)
   #? symmetries 
 
   #TODO Trainer as separate actor
-  tr = MuTrainer(env.gspec, env.curnns |> Flux.trainmode!, env.memory, env.params.learning_params, Flux.ADAM(lp.learning_rate))
+  tr = MuTrainer(env.gspec, env.curnns |> Flux.trainmode!, env.memory, env.params.learning_params, env.params.learning_params.opt)
   nbatches = lp.batches_per_checkpoint
 
-  # @progress "learning step (epoch)" for _ in 1:lp.num_checkpoints
-  for _ in 1:lp.num_checkpoints
+  # for _ in 1:lp.num_checkpoints
+  @progress "learning step (epoch)" for _ in 1:lp.num_checkpoints
     update_weights!(tr, nbatches)
     if isnothing(ap)
       # env.curnns = tr.nns # trainer operate on shallow copy of curnns
@@ -144,10 +189,10 @@ function learning_step!(env::MuEnv)
     else
       r_cnn, redundancy = pit_networks(gspec, tr.nns, env.bestnns, ap)
       rewards_curnn_mean = r_cnn|>mean
-      if rewards_curnn_mean >= 0
+      if rewards_curnn_mean >= ap.update_threshold
         env.bestnns = deepcopy(tr.nns)
       end
-      @debug "Learning Step" rewards_curnn_mean curnn_wins=count(isone,r_cnn)/length(r_cnn)
+      @info "Learning Step" rewards_curnn_mean curnn_wins=count(isone,r_cnn)/length(r_cnn)
     end
   end
   @info "Learning Step" stage="finished"
@@ -212,15 +257,18 @@ end
 # one machine - learning
 # others - self_play
 #? tasks while-loop for async (and distributed) (pure Julia, Actors.jl, Jun's Oolong.jl, Dagger.jl)
-function train!(env::MuEnv; benchmark=[])
-  while env.itc < env.params.num_iters
+function mutrain!(env::MuEnv; benchmark=[], path="results/")
+  while env.itc <= env.params.num_iters
     @info "Training" stage="starting iteration" env.itc
     _, time_self_play = @timed self_play_step!(env) #TODO create custom time loggers
     mem_report, time_memory_analysis = @timed memory_analysis(env.memory)
     @info "Memory Analysis" mem_report...
     _, time_learning = @timed learning_step!(env)
     @info "Training" stage="iteration finished" env.itc time_self_play time_learning time_memory_analysis
-    run_duel(env, benchmark) # compare MuZero with pure MCTS or other algorithm 
+    if env.itc % 50 == 0 
+      duel_res = run_duel(env, benchmark); @info "Benchmark" vanilla_mcts=duel_res[1] minmax_d5=duel_res[2]
+      FileIO.save(path*"$(format(now(),"yyyy-mm-ddTHHMM"))_env_$(env.itc).jld2", "env", env)
+    end
     env.itc += 1
   end
   @info "Training" stage="Finished"

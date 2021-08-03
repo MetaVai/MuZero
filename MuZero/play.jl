@@ -64,8 +64,8 @@ end
 # ? does rootinfo.vest should be there, or just
 # ? sum without γ
 # compute_rootvalue(rootinfo::MCTS.StateInfo, γ) = rootinfo.Vest + γ*sum([st.W for st in rootinfo.stats])
-compute_rootvalue(ri::MCTS.StateInfo, γ) = max((st.W/st.N for st in ri.stats))
-compute_rootvalue(ri::MCTS.StateInfo, γ) = sum((st.W for st in ri.stats)) / MCTS.Ntot(ri)
+# compute_rootvalue(ri::MCTS.StateInfo, γ) = max(st.W/st.N for st in ri.stats)
+compute_rootvalue(ri::MCTS.StateInfo) = sum(st.W for st in ri.stats) / MCTS.Ntot(ri)
 # TODO compare max and sum
 
 """
@@ -100,7 +100,7 @@ function AlphaZero.think(p::MuPlayer, game)
 		MCTS.explore!(mcts, mugame, niters)
 		end
 	end
-	rootvalue = compute_rootvalue(mcts.tree[rootstate], mcts.gamma)
+	rootvalue = compute_rootvalue(mcts.tree[rootstate])
 	actions, π_target = MCTS.policy(mcts, mugame)
 	return actions, π_target, rootvalue
 end
@@ -111,8 +111,9 @@ end
 overloaded AlphaZero.play_game() function, 
 that additionally push selected action, and rootvalue into trace
 """
-function AlphaZero.play_game(gspec, player::Union{MuPlayer,MinMax.Player}; flip_probability=0.)
-  game = GI.init(gspec)
+function AlphaZero.play_game(gspec, player::Union{MuPlayer,MinMax.Player,MctsPlayer}; flip_probability=0., initstate=nothing)
+  game = isnothing(initstate) ? GI.init(gspec) : GI.init(gspec, initstate)
+	# @debug "initstate" initstate GI.current_state(game)
   trace = MuTrace(GI.current_state(game))
   while true
     if GI.game_terminated(game)

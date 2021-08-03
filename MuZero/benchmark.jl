@@ -18,9 +18,9 @@ function Benchmark.run(env::MuEnv, eval::AlphaZero.Benchmark.Evaluation)
     simulator, env.gspec, eval.sim)
   # gamma = env.params.self_play.mcts.gamma
   rewards, redundancy = rewards_and_redundancy(samples, gamma=1.0)
-  white_lost, draw, white_won = count_wins(rewards) ./ length(rewards)
-  @info "Benchmark" white_lost draw white_won time=elapsed
-  return white_lost, draw, white_won
+  opponent_won, draw, mu_won = count_wins(rewards) ./ length(rewards)
+  # @info "Benchmark" white_lost draw white_won time=elapsed
+  return (; opponent_won, draw, mu_won, time_benchmarked=elapsed)
 #   return Report.Evaluation(
 #     name(eval), mean(rewards), redundancy, rewards, nothing, elapsed)
 end
