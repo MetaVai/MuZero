@@ -193,6 +193,8 @@ function RandomMctsPlayer(game_spec::AbstractGameSpec, params::MctsParams)
     τ=params.temperature)
 end
 
+compute_rootvalue(ri::MCTS.StateInfo) = sum(st.W for st in ri.stats) / MCTS.Ntot(ri)
+
 function think(p::MctsPlayer, game)
   if isnothing(p.timeout) # Fixed number of MCTS simulations
     MCTS.explore!(p.mcts, game, p.niters)
@@ -202,7 +204,9 @@ function think(p::MctsPlayer, game)
       MCTS.explore!(p.mcts, game, p.niters)
     end
   end
-  return MCTS.policy(p.mcts, game)
+  actions, π_target = MCTS.policy(p.mcts, game)
+  rootvalue = compute_rootvalue(p.mcts.tree[GI.current_state(game)])
+  return actions, π_target, rootvalue
 end
 
 function player_temperature(p::MctsPlayer, game, turn)
