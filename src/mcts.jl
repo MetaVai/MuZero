@@ -208,7 +208,7 @@ function run_simulation!(env::Env, game, depth; η, root=true)
     else
       ϵ = root ? env.noise_ϵ : 0.
       scores = uct_scores(info, env.cpuct, ϵ, η)
-      action_id = argmax(scores)
+      action_id = all(s->s===scores[1], scores) ? rand(1:length(scores)) : argmax(scores) #! have priority for actions with lesser ordinal numbers
       action = actions[action_id]
       wp = GI.white_playing(game)
       GI.play!(game, action)
