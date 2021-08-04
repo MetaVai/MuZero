@@ -101,7 +101,7 @@ Create an oracle that delegates its job to an inference server.
 - When called on a state, this oracle sends a query to the server identified by
   request channel `reqc`. This call is blocking until every other active worker also
   sends its query.
-- A `preprocess` function can be provided to ransform the passed state before it is
+- A `preprocess` function can be provided to transform the passed state before it is
   sent to the server as a query.
 """
 struct BatchedOracle{F}
