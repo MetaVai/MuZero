@@ -81,6 +81,14 @@ Return a vectorized representation of a given state.
 """
 function vectorize_state end
 
+"""
+    encode_action(::AbstractGameSpec, action) :: Array{Float32}
+
+Return encoded action for MuZero's Dynamics
+(typically one_hot scaled to size of the game board)
+"""
+function encode_action end
+
 #####
 ##### Operations on envs
 #####

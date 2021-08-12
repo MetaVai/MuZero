@@ -1,7 +1,8 @@
 using Base: AlwaysLockedST
 function Benchmark.run(env::MuEnv, eval::AlphaZero.Benchmark.Evaluation)
   # net() = Network.copy(env.bestnns, on_gpu=eval.sim.use_gpu, test_mode=true)
-  net() = deepcopy(env.bestnns) |> Flux.testmode!
+  device = eval.sim.use_gpu ? Flux.gpu : Flux.cpu
+  net() = deepcopy(env.bestnns) |> device |> Flux.testmode!
   if isa(eval, Benchmark.Single)
     simulator = Simulator(net, record_trace) do net
       Benchmark.instantiate(eval.player, env.gspec, net)
@@ -37,10 +38,12 @@ function Benchmark.instantiate(p::Mu, gspec::AbstractGameSpec, nns)
 end
 
 function run_duel(env, benchmark)
-  report = []
-  for duel in benchmark
+  # report = []
+  report = Dict()
+  for (name,duel) in pairs(benchmark)
     outcome = Benchmark.run(env, duel)
-    push!(report, outcome)
+    # push!(report, (;name=outcome))
+    report[name] = outcome
   end
   return report
 end

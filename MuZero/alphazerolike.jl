@@ -53,25 +53,3 @@ function (prediction_f::AlphaPrediction)(hiddenstate)
 end
 Flux.@functor AlphaPrediction
 
-# cache oracle (nn) results, so it can be quickly obtained without re-running network
-struct CachedOracle{O, K, V}
-  oracle :: O
-  lookuptable :: Dict{K,V}
-end
-
-# oracle, typeof(State), typeof(Action), typeof(Reward) - used with dynamics
-function CachedOracle(oracle, S, A=Int, R=Float64)
-  return CachedOracle(
-    oracle,
-    Dict{Tuple{S,A}, Tuple{R,S}}()) # (sᵏ⁻¹,aᵏ) => (rᵏ,sᵏ)
-end
-
-function (oracle::CachedOracle)(args...)
-  if haskey(oracle.lookuptable, args)
-    answer = oracle.lookuptable[args]
-  else
-    answer = oracle.oracle(args...)
-    oracle.lookuptable[args] = answer
-  end
-  return answer
-end

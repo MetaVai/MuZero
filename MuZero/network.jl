@@ -1,65 +1,22 @@
 using Base: @kwdef, ident_cmp
-using Flux: Chain, Dense, Conv, BatchNorm, SkipConnection, flatten, relu, elu, softmax, onehot, onehotbatch
+using Flux: Chain, Dense, Conv, BatchNorm, SkipConnection, flatten, relu, elu, softmax, unstack
+import Zygote
+using CUDA
 
 to_singletons(x) = reshape(x, size(x)..., 1)
 from_singletons(x) = reshape(x, size(x)[1:end-1])
 
-##### Representation #####
+abstract type AbstractPrediction end  # gspec, hyper, common, policyhead, valuehead
+abstract type AbstractDynamics end    # gspec, hyper, common, statehead, rewardhead
+abstract type AbstractRepresentation end # gspec, hyper, common
 
-@kwdef struct RepresentationHP
-  width :: Int
-  depth :: Int
-  hiddenstate_shape :: Int
-  use_batch_norm :: Bool = false
-  batch_norm_momentum :: Float32 = 0.6f0
-end
-
-mutable struct RepresentationNetwork
-  gspec
-  hyper
-  architecture
-end
-
-function RepresentationNetwork(gspec::AbstractGameSpec, hyper::RepresentationHP)
-  bnmom = hyper.batch_norm_momentum
-  function make_dense(indim, outdim)
-    if hyper.use_batch_norm
-      Chain(
-      Dense(indim, outdim),
-      BatchNorm(outdim, relu, momentum=bnmom))
-    else
-      Dense(indim, outdim, relu)
-    end
-  end
-  indim = prod(GI.state_dim(gspec))
-  outdim = hyper.hiddenstate_shape
-  hsize = hyper.width
-  hlayers(depth) = [make_dense(hsize, hsize) for i in 1:depth]
-  if hyper.depth == -1 # somewhat unintuitive, jump from 1 to 3 layers #? depth-1 
-    architecture = Chain(
-      flatten,
-      # make_dense(indim, outdim)
-      Dense(indim, outdim)
-    )
-  else
-    architecture = Chain(
-      flatten,
-      make_dense(indim, hsize),
-      hlayers(hyper.depth)...,
-      make_dense(hsize, outdim)
-    )
-  end
-  RepresentationNetwork(gspec, hyper, architecture)
-end
-
-function forward(nn::RepresentationNetwork, observation)
-  hiddenstate = nn.architecture(observation)
+function forward(nn::AbstractRepresentation, observation)
+  hiddenstate = nn.common(observation)
   return hiddenstate
 end
 
-function evaluate(nn::RepresentationNetwork, observation)
-  gspec = nn.gspec
-  x = GI.vectorize_state(gspec, observation)
+function evaluate(nn::AbstractRepresentation, observation)
+  x = GI.vectorize_state(nn.gspec, observation)
   # TODO: convert_input for GPU usage
   xnet = to_singletons(x)
   net_output = forward(nn, xnet)
@@ -68,192 +25,98 @@ function evaluate(nn::RepresentationNetwork, observation)
   return hiddenstate
 end
 
-(nn::RepresentationNetwork)(observation) = evaluate(nn, observation)
+(nn::AbstractRepresentation)(observation) = evaluate(nn, observation)
 
-
-
-### general SimpleNet used in Prediction and Dynamics
-
-@kwdef struct SimpleNetHP_
-  indim :: Int
-  outdim :: Int
-  width :: Int
-  depth_common :: Int
-  depth_vectorhead :: Int = 1
-  depth_scalarhead :: Int = 1
-  use_batch_norm :: Bool = false
-  batch_norm_momentum :: Float32 = 0.6f0
+function evaluate_batch(nn::AbstractRepresentation, batch)
+  X = Flux.batch(GI.vectorize_state(nn.gspec, b) for b in batch)
+  Xnet = to_nndevice(nn,X)
+  net_outputs = forward(nn, Xnet)
+  Hiddenstates = from_nndevice(nn, net_outputs)
+  batchdim = ndims(Hiddenstates)
+  return unstack(Hiddenstates, batchdim)
 end
 
-mutable struct SimpleNet_
-  gspec
-  hyper
-  common
-  scalarhead
-  vectorhead
-end
-# TODO remove gspec dependence
-function SimpleNet_(gspec::AbstractGameSpec, hyper::SimpleNetHP_)
-  bnmom = hyper.batch_norm_momentum
-  function make_dense(indim, outdim)
-    if hyper.use_batch_norm
-      Chain(
-      Dense(indim, outdim),
-      BatchNorm(outdim, elu, momentum=bnmom))
-    else
-      Dense(indim, outdim, elu)
-    end
-  end
-  indim = hyper.indim
-  outdim = hyper.outdim
-  hsize = hyper.width
-  hlayers(depth) = [make_dense(hsize, hsize) for i in 1:depth] #? 1:depth-1
-  # common = depth_common == -1 ?
-  #   flatten :
-  #   Chain(
-  #     flatten, #?
-  #     make_dense(indim, hsize),
-  #     hlayers(hyper.depth_common)...)
-  # scalarhead = Chain(
-  #   hlayers(hyper.depth_scalarhead)...,
-  #   Dense(hsize, 1, tanh))
-  # vectorhead = Chain(
-  #   hlayers(hyper.depth_vectorhead)...,
-  #   Dense(hsize, outdim),
-  #   softmax)
-  if hyper.depth_common == -1
-    common = identity
-    outcomm = indim
-  else
-    common = Chain(
-      flatten, #? identity
-      make_dense(indim, hsize),
-      hlayers(hyper.depth_common)...)
-    outcomm = hsize
-  end
-  if hyper.depth_scalarhead == -1
-    scalarhead = Dense(outcomm, 1, tanh)
-  else
-    scalarhead = Chain(
-      outcomm != hsize ? make_dense(outcomm, hsize) : identity,
-      hlayers(hyper.depth_scalarhead)...,
-      Dense(hsize, 1, tanh))
-  end
-  if hyper.depth_vectorhead == -1
-    vectorhead = Chain(Dense(outcomm, outdim))
-  else
-    vectorhead = Chain(
-      outcomm != hsize ? make_dense(outcomm, hsize) : identity,
-      hlayers(hyper.depth_vectorhead)...,
-      Dense(hsize, outdim)
-      )
-  end
-
-  SimpleNet_(gspec, hyper, common, scalarhead, vectorhead)
-end
 
 
 ### Dynamics ###
 
-@kwdef struct DynamicsHP
-  hiddenstate_shape :: Int
-  width :: Int
-  depth_common :: Int
-  depth_vectorhead :: Int = 1 # depth state-head
-  depth_scalarhead :: Int = 1 # depth reward-head
-  use_batch_norm :: Bool = false
-  batch_norm_momentum :: Float32 = 0.6f0
-end
-
-mutable struct DynamicsNetwork
-  gspec
-  hyper
-  common
-  scalarhead
-  vectorhead
-end
-
-function DynamicsNetwork(gspec::AbstractGameSpec, hyper::DynamicsHP)
-  indim = hyper.hiddenstate_shape + GI.num_actions(gspec)
-  outdim = hyper.hiddenstate_shape
-  simplenethyper = SimpleNetHP_(indim,
-    outdim,
-    hyper.width,
-    hyper.depth_common,
-    hyper.depth_vectorhead,
-    hyper.depth_scalarhead,
-    hyper.use_batch_norm,
-    hyper.batch_norm_momentum)
-  simplenet = SimpleNet_(gspec,simplenethyper)
-  DynamicsNetwork(gspec, hyper, simplenet.common, simplenet.scalarhead, simplenet.vectorhead)
-end
-
-function forward(nn::DynamicsNetwork, hiddenstate, action)
-  action_one_hot = onehotbatch(action, GI.actions(gspec))
-  hiddenstate_action = cat(hiddenstate, action_one_hot, dims=1)
+function forward(nn::AbstractDynamics, hiddenstate_action)
   c = nn.common(hiddenstate_action)
-  r = nn.scalarhead(c)
-  s⁺¹ = nn.vectorhead(c)
+  r = nn.rewardhead(c)
+  s⁺¹ = nn.statehead(c)
   return (r, s⁺¹)
 end
 
-function evaluate(nn::DynamicsNetwork, hiddenstate, action)
+#TODO add GPU support
+function evaluate(nn::AbstractDynamics, hiddenstate, action)
+  snet = to_singletons(hiddenstate)
+  batchdim = ndims(snet)
+  if batchdim == 2
+    avalactions = Base.OneTo(length(GI.actions(nn.gspec)))
+    encoded_action = onehot(action, avalactions)
+  else
+    encoded_action = GI.encode_action(nn.gspec, action)
+  end
   # gspec = nn.gspec
   # action_one_hot = onehot(action, GI.actions(gspec))
-  # x = cat(hiddenstate, action_one_hot, dims=1)
-  xnet = to_singletons(hiddenstate)
-  # anet = to_singletons(action)
-  net_output = forward(nn, xnet, action)
+  anet = to_singletons(encoded_action)
+  dim = ndims(snet)
+  dim == 2 && (anet = Flux.flatten(anet))
+  xnet = cat(snet, anet, dims=dim-1) # make dims=3 universal
+  net_output = forward(nn, xnet)
   r, s = from_singletons.(net_output)
   return (r[1], s)
 end
 
-(nn::DynamicsNetwork)(hiddenstate, action) = evaluate(nn, hiddenstate, action)
+(nn::AbstractDynamics)((hiddenstate, action)) = evaluate(nn, hiddenstate, action)
+
+function onehot(x::Integer, labels::Base.OneTo; type=Float32)
+  result = zeros(type, length(labels))
+  result[x] = one(type)
+  return result
+end
+
+function encode_a(gspec, a; batchdim=4)
+  if batchdim==2
+    avalactions = Base.OneTo(length(GI.actions(gspec)))
+    ret_a = onehot(a, avalactions)
+  else
+    ret_a = GI.encode_action(gspec, a)
+  end
+  return ret_a
+end
+
+
+function evaluate_batch(nn::AbstractDynamics, batch)
+  S = Flux.batch(b[1] for b in batch)
+  batchdim = ndims(S)
+  A = Flux.batch(encode_a(nn.gspec, b[2]; batchdim) for b in batch)
+  batchdim == 2 && (A = Flux.flatten(A))
+  X = cat(S, A, dims=batchdim-1)
+  Xnet = to_nndevice(nn,X)
+  net_outputs = forward(nn, Xnet)
+  (R, S⁺¹) = from_nndevice(nn,net_outputs)
+  # # 
+  # R_itr = unstack_itr(R, 2)
+  # S⁺¹_itr = unstack_itr(S⁺¹, batchdim)
+  # return collect(zip(R_itr, S⁺¹_itr))
+  # return [(R[1,i], S⁺¹[:,i]) for i in eachindex(batch)]
+  # return [(R[1,i], S⁺¹[:,:,:,i]) for i in eachindex(batch)]
+  # return [(R[1,i], collect(selectdim(S⁺¹,batchdim,i))) for i in eachindex(batch)]
+  return collect(zip(unstack(R,2), unstack(S⁺¹,batchdim)))
+end
 
 
 ### Prediction ###
 
-@kwdef struct PredictionHP
-  hiddenstate_shape :: Int
-  width :: Int
-  depth_common :: Int
-  depth_vectorhead :: Int = 1 # depth policy-head
-  depth_scalarhead :: Int = 1 # depth value-head
-  use_batch_norm :: Bool = false
-  batch_norm_momentum :: Float32 = 0.6f0
-end
-
-mutable struct PredictionNetwork
-  gspec
-  hyper
-  common
-  scalarhead
-  vectorhead
-end
-
-function PredictionNetwork(gspec::AbstractGameSpec, hyper::PredictionHP)
-  indim = hyper.hiddenstate_shape
-  outdim = GI.num_actions(gspec)
-  simplenethyper = SimpleNetHP_(indim,
-    outdim,
-    hyper.width,
-    hyper.depth_common,
-    hyper.depth_vectorhead,
-    hyper.depth_scalarhead,
-    hyper.use_batch_norm,
-    hyper.batch_norm_momentum)
-  simplenet = SimpleNet_(gspec,simplenethyper)
-  PredictionNetwork(gspec, hyper, simplenet.common, simplenet.scalarhead, Chain(simplenet.vectorhead, softmax))
-end
-
-function forward(nn::PredictionNetwork, hiddenstate)
+function forward(nn::AbstractPrediction, hiddenstate)
   c = nn.common(hiddenstate)
-  v = nn.scalarhead(c)
-  p = nn.vectorhead(c)
+  v = nn.valuehead(c)
+  p = nn.policyhead(c)
   return (p, v)
 end
 
-function evaluate(nn::PredictionNetwork, hiddenstate)
+function evaluate(nn::AbstractPrediction, hiddenstate)
   x = hiddenstate
   xnet = to_singletons(x)
   net_output = forward(nn, xnet)
@@ -261,44 +124,104 @@ function evaluate(nn::PredictionNetwork, hiddenstate)
   return (p, v[1])
 end
 
-(nn::PredictionNetwork)(hiddenstate) = evaluate(nn, hiddenstate)
+(nn::AbstractPrediction)(hiddenstate) = evaluate(nn, hiddenstate)
 
-# TODO create constructor from gspec, hidden_state_shape... and get rid of gspecs
-struct MuNetworkHP{GameSpec}
-  # hidden_state_shape
-  gspec :: GameSpec
-  predictionHP :: PredictionHP
-  dynamicsHP :: DynamicsHP
-  representationHP :: RepresentationHP
+function evaluate_batch(nn::AbstractPrediction, batch)
+  X = Flux.batch(batch)
+  Xnet = to_nndevice(nn, X)
+  net_output = forward(nn, Xnet)
+  P, V = from_nndevice(nn, net_output)
+  return collect(zip(unstack(P,2), unstack(V,2)))
 end
 
-struct MuNetwork
+
+# TODO create constructor from gspec, hidden_state_shape... and get rid of gspecs
+struct MuNetworkHP{GameSpec, Fhp, Ghp, Hhp}
+  # hidden_state_shape
+  gspec :: GameSpec
+  predictionHP :: Fhp
+  dynamicsHP :: Ghp
+  representationHP :: Hhp
+end
+
+struct MuNetwork{F<:AbstractPrediction,G<:AbstractDynamics,H<:AbstractRepresentation}
   params :: MuNetworkHP
-  f :: PredictionNetwork
-  g :: DynamicsNetwork
-  h :: RepresentationNetwork
+  f :: F
+  g :: G
+  h :: H
 end
 
 function MuNetwork(params::MuNetworkHP)
   fHP = params.predictionHP
   gHP = params.dynamicsHP
   hHP = params.representationHP
-  @assert fHP.hiddenstate_shape == gHP.hiddenstate_shape == hHP.hiddenstate_shape
+  # @assert fHP.hiddenstate_shape == gHP.hiddenstate_shape == hHP.hiddenstate_shape
   f = PredictionNetwork(params.gspec, fHP)
   g = DynamicsNetwork(params.gspec, gHP)
   h = RepresentationNetwork(params.gspec, hHP)
   return MuNetwork(params, f, g, h)
 end
 
+# takes output form neural netrork back to CPU, and unstack it along last dimmension
+function convert_output(X)
+  X = from_nndevice(nothing, X)
+  return Flux.unstack(X, ndims(X))
+end
 
+struct InitialOracle{H<:AbstractRepresentation, F<:AbstractPrediction}
+  h :: H
+  f :: F
+end
 
-#? create Flux.functor with constructors if smth fails 
-Flux.@functor RepresentationNetwork (architecture,)
-Flux.@functor DynamicsNetwork       (common, scalarhead, vectorhead)
-Flux.@functor PredictionNetwork     (common, scalarhead, vectorhead)
-Flux.@functor MuNetwork             (f, g, h)
+InitialOracle(nns::MuNetwork) = InitialOracle(nns.h, nns.f)
 
+(init::InitialOracle)(observation) = evaluate(init, observation)
 
+# function evaluate_batch(init::InitialOracle, batch)
+#   X = Flux.batch(GI.vectorize_state(init.f.gspec, b) for b in batch) #obsrvation
+#   Xnet = to_nndevice(init.f, X)
+#   S⁰ = forward(init.h, Xnet) # hiddenstate
+#   P⁰, V⁰ = forward(init.f, S⁰) # policy, value
+
+#   P⁰, V⁰, S⁰ = map(convert_output, (P⁰, V⁰, S⁰))
+#   V⁰ = [v[1] for v in V⁰]
+#   return collect(zip(P⁰, V⁰, S⁰, zero(V⁰)))
+# end
+function evaluate_batch(init::InitialOracle, batch)
+  X = Flux.batch(GI.vectorize_state(init.f.gspec, b) for b in batch) #obsrvation
+  Xnet = to_nndevice(init.f, X)
+  S⁰ = forward(init.h, Xnet) # hiddenstate
+  P⁰, V⁰ = forward(init.f, S⁰) # policy, value
+  P⁰, V⁰, S⁰ = map(convert_output, (P⁰, V⁰, S⁰))
+  V⁰ = [v[1] for v in V⁰]
+  return collect(zip(P⁰, V⁰, S⁰, zero(V⁰)))
+end
+
+#TODO test nonmutable struct
+struct RecurrentOracle{G<:AbstractDynamics, F<:AbstractPrediction}
+  g :: G
+  f :: F
+end
+
+RecurrentOracle(nns::MuNetwork) = RecurrentOracle(nns.g, nns.f)
+
+(recur::RecurrentOracle)((state,action)) = evaluate(recur, (state,action))
+
+function evaluate_batch(recur::RecurrentOracle, batch)
+  S = Flux.batch(b[1] for b in batch)
+  batchdim = ndims(S)
+  A = Flux.batch(encode_a(recur.f.gspec, b[2]; batchdim) for b in batch)
+  S_A = cat(S,A,dims=batchdim-1)
+  S_A_net = to_nndevice(recur.f, S_A) # assuming all networks are on the same device
+  R, S⁺¹ = forward(recur.g, S_A_net)
+  P⁺¹, V⁺¹ = forward(recur.f, S⁺¹)
+  P⁺¹, V⁺¹, R, S⁺¹ = map(convert_output, (P⁺¹, V⁺¹, R, S⁺¹))
+  V⁺¹ = (v[1] for v in V⁺¹)
+  R = (r[1] for r in R)
+  return collect(zip(P⁺¹, V⁺¹, S⁺¹, R)) #TODO check for memory consumption;s implement this everywhere,
+end
+ # TODO cleanup the rest
+evaluate(nn, x) = evaluate_batch(nn, [x])[1]
 
 # TODO regularized params
 regularized_params_(l) = []
@@ -313,3 +236,29 @@ end
 function regularized_params(net)
   return (w for l in Flux.modules(net.f.net) for w in regularized_params_(l))
 end
+
+
+array_on_gpu(::Array) = false
+array_on_gpu(::CuArray) = true
+array_on_gpu(arr) = error("Usupported array type: ", typeof(arr))
+
+include("./architectures/simplemlp.jl")
+include("./architectures/resnet.jl")
+
+#TODO this it kinda ugly, maybe create macro that create proper on_gpu based on networks
+on_gpu(nn::Union{PredictionSimpleNetwork,PredictionResnetNetwork}) = array_on_gpu(nn.valuehead[end].bias)
+on_gpu(nn::Union{DynamicsSimpleNetwork,DynamicsResnetNetwork}) = array_on_gpu(nn.rewardhead[end].bias)
+on_gpu(nn::RepresentationSimpleNetwork) = array_on_gpu(nn.common[end].bias)
+on_gpu(nn::RepresentationResnetNetwork) = array_on_gpu(nn.common[end][1].layers[1].weight)
+
+to_nndevice(nn, x) = on_gpu(nn) ? Flux.gpu(x) : x
+from_nndevice(nn, x) = Flux.cpu(x)
+
+# remembert to put fields in correct order, otherwise they are swapped when |>gpu
+Flux.@functor RepresentationSimpleNetwork (common,)
+Flux.@functor RepresentationResnetNetwork (common,)
+Flux.@functor DynamicsSimpleNetwork       (common, statehead, rewardhead)
+Flux.@functor DynamicsResnetNetwork       (common, statehead, rewardhead)
+Flux.@functor PredictionSimpleNetwork     (common, policyhead, valuehead)
+Flux.@functor PredictionResnetNetwork     (common, policyhead, valuehead)
+Flux.@functor MuNetwork                   (f, g, h)

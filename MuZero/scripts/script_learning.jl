@@ -1,4 +1,3 @@
-using Revise: include
 using Revise
 using AlphaZero
 using ProgressLogging
@@ -8,6 +7,7 @@ using ParameterSchedulers: Scheduler, Cos
 import Flux
 import FileIO
 import Random
+import CUDA
 
 import LinearAlgebra
 LinearAlgebra.BLAS.set_num_threads(1)
@@ -17,12 +17,18 @@ include("../network.jl")
 include("../alphazerolike.jl")
 include("../trace.jl")
 include("../play.jl")
+include("../simulations.jl")
 include("../training.jl")
 include("../learning.jl")
 include("../benchmark.jl")
 include("../probe-games.jl")
 
-gspec = Examples.games["tictactoe"]
+
+device = Flux.cpu
+# device = Flux.gpu
+# CUDA.allowscalar(true)
+
+gspec = Examples.games["connect-four"]
 # gspec = ProbeGames.games["a1r1"]
 # gspec = ProbeGames.games["a1o2r2"]
 # gspec = ProbeGames.games["a1r1s2"] # representation collapses states into the same one
@@ -30,24 +36,27 @@ gspec = Examples.games["tictactoe"]
 # gspec = ProbeGames.games["twoplayer"] 
 # gspec = ProbeGames.games["simplertictactoe"] 
 
-n=1
+n=32
 self_play = (;
   sim=SimParams(
     num_games=100,
     num_workers=n,
-    batch_size=n,
+    # TODO make batch sizes for each network
+    batch_size=16, 
     use_gpu=false,
+    # todevice=Flux.cpu, #? 
     reset_every=4, #not used, mcts resets everytime
     flip_probability=0.,
     alternate_colors=false),
   mcts = MctsParams(
-    num_iters_per_turn=64, #1000 benchmark
+    num_iters_per_turn=128, #1000 benchmark
     cpuct=1.25,
     temperature=ConstSchedule(1.0),
     dirichlet_noise_ϵ=0.25,
-    dirichlet_noise_α=0.1))
+    dirichlet_noise_α=0.1),
+  device=Flux.gpu)
 
-#for mcts rollout generation
+# # for mcts rollout generation
 # self_play = (;
 #   sim=SimParams(
 #     num_games=10_000,
@@ -67,8 +76,8 @@ self_play = (;
 arena = (;
   sim=SimParams(
     num_games=50,
-    num_workers=n,
-    batch_size=n,
+    num_workers=16,
+    batch_size=16, 
     use_gpu=false,
     reset_every=1,
     flip_probability=0., #0.5
@@ -77,12 +86,13 @@ arena = (;
     self_play.mcts,
     temperature=ConstSchedule(0.3),
     dirichlet_noise_ϵ=0.1),
-  update_threshold=0.0)
+  update_threshold=0.0,
+  device=Flux.gpu)
 
 
 learning_params = (;
-  num_unroll_steps=5, #if =0, g is not learning, muzero-general=20
-  td_steps=20, # with max length=9, always go till the end of the game, rootvalues don't count
+  num_unroll_steps=10, #if =0, g is not learning, muzero-general=20
+  td_steps=50, # with max length=9, always go till the end of the game, rootvalues don't count
   discount=0.997,
   #// value_loss_weight = 0.25, #TODO
   l2_regularization=1f-4, #Float32
@@ -91,43 +101,44 @@ learning_params = (;
   batches_per_checkpoint=10,
   num_checkpoints=1,
   opt=Scheduler(
-    Cos(λ0=1e-3, λ1=1e-5, period=1000), # cosine annealing, google 2e4, generat doesn't use any
+    Cos(λ0=1e-3, λ1=1e-5, period=10000), # cosine annealing, google 2e4, generat doesn't use any
     Flux.ADAM()
-  )
+  ),
+  device=Flux.gpu
 )
 
 benchmark_sim = SimParams(
     num_games=400,
-    num_workers=1,
-    batch_size=4,
+    num_workers=64,
+    batch_size=32,
     use_gpu=false,
     reset_every=1,
     flip_probability=0.0, #0.5 
     alternate_colors=true)
 
 bench_mcts = MctsParams(
-  num_iters_per_turn=400, #1000 benchmark
+  num_iters_per_turn=500, #1000 benchmark
   cpuct=1.25,
   temperature=ConstSchedule(0.3),
   dirichlet_noise_ϵ=0.25,
   dirichlet_noise_α=0.1)
 
-benchmark = [
-  Benchmark.Duel(
+benchmark = (;
+  vanilla_mcts=Benchmark.Duel(
     Mu(arena.mcts),
     Benchmark.MctsRollouts(bench_mcts),
     benchmark_sim),
-  Benchmark.Duel(
-    Mu(arena.mcts),
-    Benchmark.MinMaxTS(depth=5, amplify_rewards=true, τ=1.),
-    benchmark_sim)
-    ]
+  # minmax_d5=Benchmark.Duel(
+  #   Mu(arena.mcts),
+  #   Benchmark.MinMaxTS(depth=5, amplify_rewards=true, τ=1.),
+  #   benchmark_sim)
+)
 
   #memory = CircularBuffer{Trace{GI.state_type(gspec)}}(1024)
 
   # μparams = MuParams(self_play, learning_params, arena, 6, 3000)
-  # μparams = MuParams(self_play, learning_params, arena, 10_000, 3000)
-  μparams = MuParams(self_play, learning_params, arena, 10_000, 3000)
+  μparams = MuParams(self_play, learning_params, arena, 10_000, 10_000)
+  # μparams = MuParams(self_play, learning_params, arena, 2, 3000)
 
   # αnns = (
   #   f=PredictionNetwork(
@@ -153,39 +164,20 @@ benchmark = [
 # muzero-general params
 μNetworkHP = MuNetworkHP(
   gspec,
-  PredictionHP(hiddenstate_shape=32, width=0, depth_common=-1,
-    depth_vectorhead=-1, depth_scalarhead=-1, use_batch_norm=false, batch_norm_momentum=1.),
-  DynamicsHP(hiddenstate_shape=32, width=64, depth_common=-1,
+  PredictionHP(hiddenstate_shape=64, width=64, depth_common=0,
+    depth_vectorhead=0, depth_scalarhead=0, use_batch_norm=false, batch_norm_momentum=1.),
+  DynamicsHP(hiddenstate_shape=64, width=64, depth_common=-1,
    depth_vectorhead=0, depth_scalarhead=0,  use_batch_norm=false, batch_norm_momentum=1.),
-  RepresentationHP(hiddenstate_shape=32, width=0, depth=-1))
+  RepresentationHP(hiddenstate_shape=64, width=0, depth=-1))
 
-# μNetworkHP = MuNetworkHP(
-#   gspec,
-#   PredictionHP(hiddenstate_shape=2, width=0, depth_common=-1,
-#     depth_vectorhead=-1, depth_scalarhead=-1, use_batch_norm=false, batch_norm_momentum=1.),
-#   DynamicsHP(hiddenstate_shape=2, width=16, depth_common=-1,
-#    depth_vectorhead=0, depth_scalarhead=0,  use_batch_norm=false, batch_norm_momentum=1.),
-#   RepresentationHP(hiddenstate_shape=2, width=0, depth=-1))
-
-# μNetworkHP = MuNetworkHP(gspec,
-#   PredictionHP(hiddenstate_shape=32, width=64, depth_common=4),
-#   DynamicsHP(hiddenstate_shape=32, width=64, depth_common=4),
-#   RepresentationHP(width=64, depth=4, hiddenstate_shape=32))
   # env = MuEnv(gspec, μparams, MuNetwork(μNetworkHP))
-  env = MuEnv(gspec, μparams, deepcopy(env.bestnns))
-  # env = FileIO.load("results/2021-08-02T1427_full_batchsize512_eta3e-3_width64/2021-08-02T1644_env_2250.jld2", "env")
-  # env = MuEnv(gspec, μparams, MuNetwork(μNetworkHP), experience=FileIO.load("memory_mctsrollout300_custominit1.jld2", "mem"))
-  # env = MuEnv(gspec, μparams, MuNetwork(μNetworkHP), experience=FileIO.load("memory_mctsrollout64.jld2", "mem"))
-  # @info "blah" memory_analysis(env.memory)...
-  # @logprogress have @debug level, and I moved all losses into @debug also,   # @logprogress have @debug level, and I moved all losses into @debug also, 
+  # env = MuEnv(gspec, μparams, deepcopy(env.bestnns))
+  # env = MuEnv(gspec, μparams, MuNetwork(μNetworkHP), experience=FileIO.load("results/c4_5x4/memory_mctsrollout500.jld2", "mem"))
+  env = MuEnv(gspec, μparams, μNetwork, experience=FileIO.load("results/c4_5x4/memory_mctsrollout500.jld2", "mem"))
 
 ##
 
-
-
-# mean_loss is @info
-
-path = "results/" * format(now(),"yyyy-mm-ddTHHMM") * "_full_pretrained_batchsize512_width64_etascheduler/"
+path = "results/c4_5x4/" * format(now(),"yyyy-mm-ddTHHMM") * "_custominit33_testbatching/"
 tblogger=TBLogger(path, min_level=Logging.Info)
   # TRAIN
   with_logger(tblogger) do
@@ -194,7 +186,7 @@ tblogger=TBLogger(path, min_level=Logging.Info)
     # @timed learning_step!(env)
     @info "network params" μNetworkHP 
     # @info "Memory Analysis" memory_analysis(env.memory)... "generated by MinMax player"
-    duel_res = run_duel(env, benchmark); @info "Benchmark" vanilla_mcts=duel_res[1] minmax_d5=duel_res[2]
+    @info "Benchmark" run_duel(env, benchmark)...
     mutrain!(env, benchmark=benchmark, path=path)
   end
 
@@ -204,14 +196,14 @@ tblogger=TBLogger(path, min_level=Logging.Info)
     @info "network params" μNetworkHP 
     # @info "alphalike params" αnns.f.net.hyper
     # train!(env; benchmark=benchmark) 
-    @info "Memory Analysis" memory_analysis(env.memory)... "generated by MinMax player"
-    duel_res = run_duel(env, benchmark); @info "Benchmark" vanilla_mcts=duel_res[1] minmax_d5=duel_res[2]
+    @info "Memory Analysis" memory_analysis(env.memory)... "generated by MCTS player"
+    @info "Benchmark" run_duel(env, benchmark)...
     function supervised_learning!(env, benchmark, num_iterations, path)
       while env.itc <= num_iterations
         _, time_learning = @timed learning_step!(env)
         @info "Training" stage="iteration finished" env.itc time_learning 
         if env.itc % 50 == 0 
-          duel_res = run_duel(env, benchmark); @info "Benchmark" vanilla_mcts=duel_res[1] minmax_d5=duel_res[2]
+          @info "Benchmark" run_duel(env, benchmark)...
           FileIO.save(path*"$(format(now(),"yyyy-mm-ddTHHMM"))_env_$(env.itc).jld2", "env", env)
         end
         env.itc += 1
@@ -223,13 +215,13 @@ tblogger=TBLogger(path, min_level=Logging.Info)
 
 
   with_logger(tblogger) do 
-    @info "Benchmark" vanilla_mcts=duel_res[1] minmax_d5=duel_res[2]
-  end
+  self_play_step!(env)
+end
 
   @enter self_play_step!(env)
   @profview self_play_step!(env)
-  self_play_step!(env)
-  learning_step!(env)
+  @timed self_play_step!(env)
+  @timed learning_step!(env)
   @profview run_duel(env, benchmark)
   mutrain!(env)
 
@@ -296,14 +288,15 @@ self_play_step!(env)
     # FileIO.save("memory_mcts_rollout_300.jld2", "mem", env.memory)
     # FileIO.save("memory_mctsrollout300_custominit1.jld2", "mem", env.memory)
     # FileIO.save("memory_mctsrollout64.jld2", "mem", env.memory)
+    FileIO.save("results/c4_5x4/memory_mctsrollout500.jld2", "mem", env.memory)
   # end
 
 count(last(t.rewards)==(1) for t in env.memory)
-
+env = envres
   hyper = env.params.learning_params
   traces = [sample_trace(env.memory) for _ in 1:2] #? change to iterator
   trace_pos_idxs = [sample_position(t) for t in traces]
-  @enter sample = make_target(gspec, traces[1], 2, hyper)
+  sample = make_target(gspec, traces[1], 2, hyper)
   samples = [make_target(gspec, t, i, hyper) for (t,i) in zip(traces, trace_pos_idxs)]
   # FileIO.save("sample.jld2", "sample_st6",sample)
   sample = FileIO.load("sample.jld2", "sample_st6")
@@ -316,13 +309,19 @@ samples = [sample]
   Rs      = Flux.batch(smpl.rs      for smpl in samples)
   f32(arr) = convert(AbstractArray{Float32}, arr)
 data =  map(x -> f32(x), (; X, A_mask, As, Ps, Vs, Rs))
-
+f32(As)
 (data.X, data.As)
+
 
   # data = [sample_batch(gspec, env.memory, env.params.learning_params) for _ in 1:1]
   losses(env.curnns, env.params.learning_params, data)
   @enter losses(env.curnns, env.params.learning_params, data)
 
+  @enter sample_batch(gspec, envres.memory, envres.params.learning_params)
+  samples = (sample_batch(gspec, envres.memory, envres.params.learning_params)|>gpu for _ in 1:n)
+  for spl in samples
+    @info spl
+  end
 
   t = @timed self_play_step!(env)
   @timed learning_step!(env)
@@ -341,13 +340,19 @@ data =  map(x -> f32(x), (; X, A_mask, As, Ps, Vs, Rs))
 
   # learning_step
 lp = env.params.learning_params
-tr = MuTrainer(env.gspec, env.curnns, env.memory, env.params.learning_params, Flux.ADAM(lp.learning_rate))
+tr = MuTrainer(env.gspec, env.curnns|>lp.device|>Flux.trainmode!, env.memory, env.params.learning_params, env.params.learning_params.opt)
 nbatches = lp.batches_per_checkpoint
-
+env.curnns|>Flux.gpu
 update_weights!(tr, nbatches)
-samples = [sample_batch(tr.gspec, tr.memory, tr.hyper) for _ in 1:2]
+@timed samples = [sample_batch(tr.gspec, tr.memory, tr.hyper) for _ in 1:10] |> Flux.gpu
+
+counter=0
+for d in data
+  counter += 1
+end
+counter
 d = samples[1]
-@enter losses(tr.nns, tr.hyper, d)
+losses(tr.nns, tr.hyper, d)
 @info d.X[:,:,1,1]
 
 
