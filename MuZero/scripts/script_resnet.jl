@@ -142,8 +142,8 @@ resμNetworkHP = MuNetworkHP(
     num_blocks=3,
     num_filters=num_filters,
     conv_kernel_size=(3,3),
-    num_policy_head1_filters=32,
-    num_value_head2_filters=32,
+    num_policy_head1_filters=2,
+    num_value_head2_filters=2,
     batch_norm_momentum=0.6f0
   ), 
   DynamicsResnetHP(
@@ -154,7 +154,7 @@ resμNetworkHP = MuNetworkHP(
     batch_norm_momentum=0.6f0
   ),
   RepresentationResnetHP(
-    num_blocks=3,
+    num_blocks=2,
     num_filters=num_filters,
     conv_kernel_size=(3,3),
     batch_norm_momentum=0.6f0

@@ -63,6 +63,7 @@ function make_target(gspec, trace, state_idx, hyper)
       p[a_m] = trace.policies[idx]
       push!(target_policies, p)
       #target_policies = [target_policies p]
+      # a = trace.actions[idx]
       push!(actions, trace.actions[idx])
     else
       push!(target_values, 0)
@@ -74,7 +75,9 @@ function make_target(gspec, trace, state_idx, hyper)
       push!(actions, rand(all_actions))
     end
   end
-  return (; x, a_mask, as=actions, vs=target_values, rs=target_rewards, ps=reduce(hcat,target_policies))
+  as = GI.encode_action.(fill(gspec), actions) #TODO add support for simplemlp
+  as = cat(as..., dims=ndims(as[1]))
+  return (; x, a_mask, as, vs=target_values, rs=target_rewards, ps=reduce(hcat,target_policies))
 end
 
 function sample_batch(gspec, memory, hyper)
@@ -89,6 +92,7 @@ function sample_batch(gspec, memory, hyper)
   Vs      = Flux.batch(smpl.vs      for smpl in samples)
   Rs      = Flux.batch(smpl.rs      for smpl in samples)
   f32(arr) = convert(AbstractArray{Float32}, arr)
+  # f32(arr) = convert(Float32, arr)
   return map(f32, (; X, A_mask, As, Ps, Vs, Rs))
 end
 
@@ -112,6 +116,7 @@ function losses(nns, hyper, (X, A_mask, As, Ps, Vs, Rs))
   P̂⁰, V̂⁰ = forward(prediction, Hiddenstate)
   P̂⁰ = normalize_p(P̂⁰, A_mask)
   # R̂⁰ = zero(V̂⁰)
+  # batchdim = ndims(Hiddenstate)
 
   scale_initial = iszero(Ksteps) ? 1f0 : 0.5f0
   Lp = scale_initial * lossₚ(P̂⁰, Ps[:, 1, :]) # scale=1
@@ -122,8 +127,11 @@ function losses(nns, hyper, (X, A_mask, As, Ps, Vs, Rs))
   # recurrent inference 
   for k in 1:Ksteps
     # targets are stored as follows: [A⁰¹ A¹² ...] [P⁰ P¹ ...] [V⁰ V¹ ...] but [R¹ R² ...]
-    A = As[k, :]
-    R̂, Hiddenstate = forward(dynamics, Hiddenstate, A) # obtain next hiddenstate
+    # A = As[k, :]
+    A = As[:,:,k:k,:]
+    S_A = cat(Hiddenstate,A, dims=3)
+    # R̂, Hiddenstate = forward(dynamics, Hiddenstate, A) # obtain next hiddenstate
+    R̂, Hiddenstate = forward(dynamics, S_A) # obtain next hiddenstate
     P̂, V̂ = forward(prediction, Hiddenstate) #? should flip V based on players
     # scale loss so that the overall weighting of the recurrent_inference (g,f nns)
     # is equal to that of the initial_inference (h,f nns)
@@ -134,16 +142,16 @@ function losses(nns, hyper, (X, A_mask, As, Ps, Vs, Rs))
   Lreg = iszero(creg) ? zero(Lv) : creg * sum(sum(w.^2) for w in regularized_params(nns))
   L = Lp + Lv + Lr + Lreg # + Lr
   # L = Lp + Lreg # + Lr
-  Zygote.@ignore @info "Loss" loss_total=L loss_policy=Lp loss_value=Lv loss_reward=Lr loss_reg_params=Lreg relative_entropy=Lp-Flux.Losses.crossentropy(Ps, Ps) #? check if compute means inside logger is avaliable
+  # Zygote.@ignore @info "Loss" loss_total=L loss_policy=Lp loss_value=Lv loss_reward=Lr loss_reg_params=Lreg relative_entropy=Lp-Flux.Losses.crossentropy(Ps, Ps) #? check if compute means inside logger is avaliable
   return (L, Lp, Lv, Lr, Lreg)
 end
 
-#TODO replace Zygote.withgradient() - new version
-function lossgrads(f, args...)
-  val, back = Zygote.pullback(f, args...)
-  grad = back(Zygote.sensitivity(val))
-  return val, grad
-end
+# #TODO replace Zygote.withgradient() - new version
+# function lossgrads(f, args...)
+#   val, back = Zygote.pullback(f, args...)
+#   grad = back(Zygote.sensitivity(val))
+#   return val, grad
+# end
   
 
 # function train!(nns, opt, loss, data; cb=()->())
@@ -152,7 +160,7 @@ function μtrain!(nns, loss, data, opt)
   losses = Float32[]
   @progress "learning step (checkpoint)" for (i, d) in enumerate(data)
   # for (i, d) in enumerate(data)
-    l, gs = lossgrads(ps) do
+    l, gs = Zygote.withgradient(ps) do
       loss(d...)
     end
     push!(losses, l)
@@ -162,19 +170,22 @@ function μtrain!(nns, loss, data, opt)
   @info "Loss" mean_loss_total = mean(losses)
 end
 
-struct MuTrainer{Network,M}
+struct MuTrainer
   gspec
-  nns :: Network # MuNetwork
-  memory :: M #? don't know if memory pointer in trainter is good idea
+  nns # MuNetwork
+  memory #? don't know if memory pointer in trainter is good idea
   hyper
   opt
+  function MuTrainer(gspec, nns, memory, hyper, opt)
+    return new(gspec, nns|>hyper.device|>Flux.trainmode!, memory, hyper, opt)
+  end
 end
 
 function update_weights!(tr::MuTrainer, n)
   L(batch...) = losses(tr.nns, tr.hyper, batch)[1]
   #? move computing samples into Trainer constructor
-  samples = (sample_batch(tr.gspec, tr.memory, tr.hyper) for _ in 1:n)
-  # opt = tr.hyper.opt_recipe()
+  samples = (sample_batch(tr.gspec, tr.memory, tr.hyper)|>tr.hyper.device for _ in 1:n)
+
   μtrain!(tr.nns, L, samples, tr.opt)
   #? GC 
 end

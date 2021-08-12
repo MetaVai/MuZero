@@ -2,6 +2,7 @@ using DataStructures:CircularBuffer
 using Statistics: stdm
 import FileIO, JLD2
 using Dates: now, format
+import Folds
 
 struct MuParams
   self_play
@@ -46,18 +47,88 @@ mutable struct MuEnv{GameSpec,Network,State}
   end
 end
 
-#! ORIGINAL 
-# simulate `num_workers` games on one machine using `Threads.nthreads()` Threads
-function simulate(simulator::Simulator, gspec::AbstractGameSpec, p)
-  total_simulated = Threads.Atomic{Int64}(0)
-  # return @withprogress name="simulating" AlphaZero.Util.mapreduce(1:p.num_games, p.num_workers, vcat, []) do
-  # @withprogress for i in 1:p.num_games # easier for debugging
-  # @withprogress name="simulating" map(1:p.num_games) do i # easier for debugging
-  map(1:p.num_games) do i # easier for debugging
-    oracles = simulator.make_oracles()
+# #! ORIGINAL 
+# # simulate `num_workers` games on one machine using `Threads.nthreads()` Threads
+# function simulate(simulator::Simulator, gspec::AbstractGameSpec, p)
+#   total_simulated = Threads.Atomic{Int64}(0) # used for progress logging
+#   # return @withprogress name="simulating" AlphaZero.Util.mapreduce(1:p.num_games, p.num_workers, vcat, []) do
+#   # @withprogress for i in 1:p.num_games # easier for debugging
+#   # @withprogress name="simulating" map(1:p.num_games) do i # easier for debugging
+#     oracles = simulator.make_oracles()
+#     # player = simulator.make_player(oracles)
+#     spawn_oracles, done = batchify_oracles(oracles; p.num_workers, p.batch_size, p.fill_batches)
+#     function simulate_game(sim_id, player)
+#       # worker_sim_id += 1
+#       # Switch players' colors if necessary: "_pf" stands for "possibly flipped"
+#       if isa(player, TwoPlayers) && p.alternate_colors
+#         colors_flipped = sim_id % 2 == 1
+#         player_pf = colors_flipped ? AlphaZero.flipped_colors(player) : player
+#       else
+#         colors_flipped = false
+#         player_pf = player
+#       end
+#       # Play the game and generate a report
+#       trace = AlphaZero.play_game(gspec, player_pf, flip_probability=p.flip_probability)
+#       # report = simulator.measure(trace, colors_flipped, player)
+#       # Reset the player periodically
+#       # if !isnothing(p.reset_every) && worker_sim_id % p.reset_every == 0
+#         reset_player!(player)
+#       # end
+#       # Signal that a game has been simulated
+#       # game_simulated() 
+
+#       # @info "selfplay progress" total_simulated[] / p.num_games
+#       return (; trace, colors_flipped)
+#     end
+#   # TensorBoardLogger doesn't work with logging on multiple threads
+#   #// return @withprogress Folds.map(1:p.num_games) do i # easier for debugging
+#   return Folds.mapreduce(vcat, 1:p.num_workers, init=[]) do worker_id # easier for debugging
+#     # return (process = simulate_game, terminate = (() -> nothing))
+#     oracles = spawn_oracles()
+#     player = simulator.make_player(oracles)
+#     local_result = []
+#     while total_simulated[] + worker_id <= p.num_games # could be easly changed to simulate[]===true, for async
+#       Threads.atomic_add!(total_simulated, 1) # don't know if there will be tension between adding, and getting number, but compiler should speedup it, so prevents it
+#       push!(local_result, simulate_game(length(local_result), player))
+#       # @debug Threads.threadid() worker_id length(local_result) 
+#       #// @logprogress total_simulated[] / p.num_games #progressbar #! uncomment
+#     end
+#     done()
+#     return local_result
+#   end
+# end
+
+
+"""
+    simulate(::Simulator, ::AbstractGameSpec; ::SimParams; <kwargs>)
+
+Play a series of games using a given [`Simulator`](@ref).
+
+# Keyword Arguments
+
+  - `game_simulated` is called every time a game simulation is completed
+    (with no arguments)
+
+# Return
+
+Return a vector of objects computed by `simulator.measure`.
+"""
+function simulate(
+    simulator::Simulator,
+    gspec::AbstractGameSpec,
+    p::SimParams)
+
+  oracles = simulator.make_oracles()
+  spawn_oracles, done =
+    batchify_oracles(oracles; p.num_workers, p.batch_size, p.fill_batches)
+  # spawn_oracles, done = simulator.make_oracles, ()->nothing
+  return Util.mapreduce(1:p.num_games, p.num_workers, vcat, []) do
+    oracles = spawn_oracles()
     player = simulator.make_player(oracles)
+    worker_sim_id = 0
+    # For each worker
     function simulate_game(sim_id)
-      # worker_sim_id += 1
+      worker_sim_id += 1
       # Switch players' colors if necessary: "_pf" stands for "possibly flipped"
       if isa(player, TwoPlayers) && p.alternate_colors
         colors_flipped = sim_id % 2 == 1
@@ -67,21 +138,15 @@ function simulate(simulator::Simulator, gspec::AbstractGameSpec, p)
         player_pf = player
       end
       # Play the game and generate a report
-      trace = AlphaZero.play_game(gspec, player_pf, flip_probability=p.flip_probability)
-      # report = simulator.measure(trace, colors_flipped, player)
+      trace = play_game(gspec, player_pf, flip_probability=p.flip_probability)
       # Reset the player periodically
-      # if !isnothing(p.reset_every) && worker_sim_id % p.reset_every == 0
-      #   reset_player!(player)
-      # end
+      if !isnothing(p.reset_every) && worker_sim_id % p.reset_every == 0
+        reset_player!(player)
+      end
       # Signal that a game has been simulated
-      # game_simulated() 
-      Threads.atomic_add!(total_simulated, 1) # don't know if there will be tension between adding, and getting number, but compiler should speedup it, so prevents it
-      # @logprogress total_simulated[] / p.num_games #progressbar #! uncomment
-      # @info "selfplay progress" total_simulated[] / p.num_games
       return (; trace, colors_flipped)
     end
-    # return (process = simulate_game, terminate = (() -> nothing))
-    simulate_game(i)
+    return (process=simulate_game, terminate=done)
   end
 end
 
@@ -134,9 +199,12 @@ end
 # Version for two-player games 
 #TODO incorporate nns pit
 function pit_networks(gspec, contender, baseline, params)
-  make_oracles() = (
-    deepcopy(contender) |> Flux.testmode!,
-    deepcopy(baseline) |> Flux.testmode!)
+  function make_oracles()
+    nnc = deepcopy(contender)|>params.device|>Flux.testmode!
+    nnb = deepcopy(baseline)|>params.device|>Flux.testmode!
+    return ((InitialOracle(nnc), RecurrentOracle(nnc)),
+            (InitialOracle(nnb), RecurrentOracle(nnb)))
+  end
   simulator = Simulator(make_oracles, record_trace) do oracles
     white = MuPlayer(oracles[1], params.mcts)
     black = MuPlayer(oracles[2], params.mcts)
@@ -153,7 +221,11 @@ end
 function self_play_step!(env::MuEnv)
   @info "Self Play Step" stage="started"
   params = env.params.self_play
-  make_oracle() = deepcopy(rand([env.bestnns, env.curnns])) |> Flux.testmode!
+  # make_oracle() = deepcopy(rand([env.bestnns, env.curnns]))|>params.device|>Flux.testmode!
+  function make_oracle()
+    nns = deepcopy(rand([env.bestnns, env.curnns]))|>params.device|>Flux.testmode!
+    return (InitialOracle(nns), RecurrentOracle(nns))
+  end
   simulator = Simulator(make_oracle, record_trace) do nns
     return MuPlayer(nns, params.mcts) 
     # return MinMax.Player(depth=7, amplify_rewards=false, τ=0.25)
@@ -176,7 +248,7 @@ function learning_step!(env::MuEnv)
   #? symmetries 
 
   #TODO Trainer as separate actor
-  tr = MuTrainer(env.gspec, env.curnns |> Flux.trainmode!, env.memory, env.params.learning_params, env.params.learning_params.opt)
+  tr = MuTrainer(env.gspec, env.curnns|>lp.device|>Flux.trainmode!, env.memory, env.params.learning_params, env.params.learning_params.opt)
   nbatches = lp.batches_per_checkpoint
 
   # for _ in 1:lp.num_checkpoints
@@ -188,7 +260,7 @@ function learning_step!(env::MuEnv)
       # @info "nns replaced" nns_replaced=true
     else
       r_cnn, redundancy = pit_networks(gspec, tr.nns, env.bestnns, ap)
-      rewards_curnn_mean = r_cnn|>mean
+      rewards_curnn_mean = mean(r_cnn)
       if rewards_curnn_mean >= ap.update_threshold
         env.bestnns = deepcopy(tr.nns)
       end
@@ -203,7 +275,7 @@ function memory_analysis(memory)
   unique_states = unique(s for g in unique_games for s in g)
   num_unique_toplay_white = count(s.curplayer==true for s in unique_states)
 
-  num_toplay_white = count(s.curplayer for t in memory for s in t.states)
+  # num_toplay_white = count(s.curplayer for t in memory for s in t.states)
 
   last_rewards = (last(t.rewards) for t in memory)
   last_rewards_mean = mean(last_rewards)
@@ -238,7 +310,7 @@ function memory_analysis(memory)
     num_unique_games=length(unique_games),
     num_unique_states=length(unique_states),
     num_unique_toplay_white,
-    num_toplay_white,
+    # num_toplay_white,
     # last_rewards_mean,
     percentage_draws,
     percentage_white_wins,
@@ -257,7 +329,7 @@ end
 # one machine - learning
 # others - self_play
 #? tasks while-loop for async (and distributed) (pure Julia, Actors.jl, Jun's Oolong.jl, Dagger.jl)
-function mutrain!(env::MuEnv; benchmark=[], path="results/")
+function mutrain!(env::MuEnv; benchmark=(;), path="results/", benchsave_every=50)
   while env.itc <= env.params.num_iters
     @info "Training" stage="starting iteration" env.itc
     _, time_self_play = @timed self_play_step!(env) #TODO create custom time loggers
@@ -265,8 +337,8 @@ function mutrain!(env::MuEnv; benchmark=[], path="results/")
     @info "Memory Analysis" mem_report...
     _, time_learning = @timed learning_step!(env)
     @info "Training" stage="iteration finished" env.itc time_self_play time_learning time_memory_analysis
-    if env.itc % 50 == 0 
-      duel_res = run_duel(env, benchmark); @info "Benchmark" vanilla_mcts=duel_res[1] minmax_d5=duel_res[2]
+    if env.itc % benchsave_every == 0 
+      @info "Benchmark" run_duel(env, benchmark)...
       FileIO.save(path*"$(format(now(),"yyyy-mm-ddTHHMM"))_env_$(env.itc).jld2", "env", env)
     end
     env.itc += 1
