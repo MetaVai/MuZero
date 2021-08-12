@@ -21,6 +21,17 @@ const Board = SMatrix{NUM_COLS, NUM_ROWS, Cell, NUM_CELLS}
 const INITIAL_BOARD = @SMatrix zeros(Cell, NUM_COLS, NUM_ROWS)
 const INITIAL_STATE = (board=INITIAL_BOARD, curplayer=WHITE)
 
+const custominit_board = @SMatrix [
+  WHITE EMPTY EMPTY EMPTY EMPTY EMPTY #1WHITE
+  WHITE BLACK BLACK EMPTY EMPTY EMPTY #2
+  BLACK WHITE BLACK WHITE BLACK WHITE #3
+  WHITE BLACK WHITE BLACK WHITE BLACK #4
+  WHITE WHITE WHITE BLACK WHITE BLACK #5
+  BLACK BLACK BLACK WHITE WHITE EMPTY #6
+  BLACK EMPTY EMPTY EMPTY EMPTY EMPTY #7
+] #!rotated board
+const custominit_state = (board=custominit_board, curplayer=WHITE)
+
 # TODO: we could have the game parametrized by grid size.
 struct GameSpec <: GI.AbstractGameSpec end
 
@@ -38,11 +49,13 @@ end
 GI.spec(::GameEnv) = GameSpec()
 
 function GI.init(::GameSpec)
-  board = INITIAL_STATE.board
-  curplayer = INITIAL_STATE.curplayer
+  state = custominit_state
+  board = state.board
+  curplayer = state.curplayer
   finished = false
   winner = 0x00
-  amask = trues(NUM_COLS)
+  # amask = trues(NUM_COLS)
+  amask = [true, true, false, false, false, true, true]
   history = Int[]
   return GameEnv(board, curplayer, finished, winner, amask, history)
 end
@@ -238,6 +251,12 @@ function GI.vectorize_state(::GameSpec, state)
     for col in 1:NUM_COLS,
         row in 1:NUM_ROWS,
         c in [EMPTY, WHITE, BLACK]]
+end
+
+function GI.encode_action(::GameSpec, action::Integer)
+  one_hot_a = zeros(Float32, NUM_COLS, NUM_ROWS, 1)
+  one_hot_a[action,:] .= 1f0
+  return one_hot_a
 end
 
 #####
