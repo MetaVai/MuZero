@@ -13,6 +13,12 @@ const Board = SVector{NUM_POSITIONS, Cell}
 const INITIAL_BOARD = Board(repeat([nothing], NUM_POSITIONS))
 const INITIAL_STATE = (board=INITIAL_BOARD, curplayer=WHITE)
 
+# try simpler version for training MuZero
+test_init_board = Board([true, nothing, nothing,
+                        nothing, nothing, nothing,
+                        nothing, nothing, nothing])
+test_init_state = (board=test_init_board, curplayer=BLACK)
+
 # TODO: we could have the game parametrized by grid size.
 struct GameSpec <: GI.AbstractGameSpec end
 
@@ -21,6 +27,7 @@ mutable struct GameEnv <: GI.AbstractGameEnv
   curplayer :: Player
 end
 
+# GI.init(::GameSpec, state=INITIAL_STATE) = GameEnv(state.board, state.curplayer)
 GI.init(::GameSpec, state=INITIAL_STATE) = GameEnv(state.board, state.curplayer)
 
 GI.spec(::GameEnv) = GameSpec()
