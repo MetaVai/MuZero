@@ -75,8 +75,16 @@ function make_target(gspec, trace, state_idx, hyper)
       push!(actions, rand(all_actions))
     end
   end
-  as = GI.encode_action.(fill(gspec), actions) #TODO add support for simplemlp
-  as = cat(as..., dims=ndims(as[1]))
+  if hyper.model_type == :mlp
+    as = encode_a.(fill(gspec), actions; batchdim=2)
+    as = Flux.batch(as)
+  elseif hyper.model_type == :resnet
+    as = GI.encode_action.(fill(gspec), actions) #TODO add support for simplemlp
+    as = cat(as..., dims=3)
+  else
+    @error "Unsupported model_type. (should be :mlp or :resnet)"
+  end
+
   return (; x, a_mask, as, vs=target_values, rs=target_rewards, ps=reduce(hcat,target_policies))
 end
 
@@ -110,6 +118,7 @@ function losses(nns, hyper, (X, A_mask, As, Ps, Vs, Rs))
   prediction, dynamics, representation = nns.f, nns.g, nns.h
   creg::Float32 = hyper.l2_regularization
   Ksteps = hyper.num_unroll_steps
+  dimₐ = hyper.model_type==:mlp ? 2 : 3
 
   # initial step, from the real observation
   Hiddenstate = forward(representation, X)
@@ -128,8 +137,9 @@ function losses(nns, hyper, (X, A_mask, As, Ps, Vs, Rs))
   for k in 1:Ksteps
     # targets are stored as follows: [A⁰¹ A¹² ...] [P⁰ P¹ ...] [V⁰ V¹ ...] but [R¹ R² ...]
     # A = As[k, :]
-    A = As[:,:,k:k,:]
-    S_A = cat(Hiddenstate,A, dims=3)
+    # A = As[:,:,k:k,:]
+    A = selectdim(As, dimₐ, k)
+    S_A = cat(Hiddenstate,A, dims=ndims(Hiddenstate)-1)
     # R̂, Hiddenstate = forward(dynamics, Hiddenstate, A) # obtain next hiddenstate
     R̂, Hiddenstate = forward(dynamics, S_A) # obtain next hiddenstate
     P̂, V̂ = forward(prediction, Hiddenstate) #? should flip V based on players
@@ -165,7 +175,7 @@ function μtrain!(nns, loss, data, opt)
     end
     push!(losses, l)
     Flux.update!(opt, ps, gs)
-    @info "debug" η=opt.optim.eta
+    # @info "debug" η=opt.optim.eta
   end
   @info "Loss" mean_loss_total = mean(losses)
 end

@@ -119,8 +119,7 @@ function simulate(
     p::SimParams)
 
   oracles = simulator.make_oracles()
-  spawn_oracles, done =
-    batchify_oracles(oracles; p.num_workers, p.batch_size, p.fill_batches)
+  spawn_oracles, done = batchify_oracles(oracles; p.num_workers, p.batch_size, p.fill_batches)
   # spawn_oracles, done = simulator.make_oracles, ()->nothing
   return Util.mapreduce(1:p.num_games, p.num_workers, vcat, []) do
     oracles = spawn_oracles()
@@ -302,7 +301,7 @@ function memory_analysis(memory)
   all_policies = (p for t in memory for p in t.policies)
   all_policies_entropy_mean = mean(entropy, all_policies)
 
-  initstate_policies = (first(t.policies) for t in env.memory)
+  initstate_policies = (first(t.policies) for t in memory)
   initstate_policies_entropy_mean = mean(entropy, initstate_policies)
 
   return (;
@@ -334,7 +333,7 @@ function mutrain!(env::MuEnv; benchmark=(;), path="results/", benchsave_every=50
     @info "Training" stage="starting iteration" env.itc
     _, time_self_play = @timed self_play_step!(env) #TODO create custom time loggers
     mem_report, time_memory_analysis = @timed memory_analysis(env.memory)
-    @info "Memory Analysis" mem_report...
+    @info "Memory Analysis" memory_analysis(env.memory)...
     _, time_learning = @timed learning_step!(env)
     @info "Training" stage="iteration finished" env.itc time_self_play time_learning time_memory_analysis
     if env.itc % benchsave_every == 0 

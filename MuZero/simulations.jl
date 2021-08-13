@@ -145,8 +145,8 @@ function launch_inference_server(
 
   return Batchifier.launch_server(;num_workers, batch_size) do batch
     n = length(batch) # batch is vector Any, cause h(O), f(S), and g(S,A) are evaluated
-    mask_i  = findall(b->b.netid == :i1, batch)
-    mask_r  = findall(b->b.netid == :r1, batch)
+    mask_i  = findall(b->b.netid == :i, batch)
+    mask_r  = findall(b->b.netid == :r, batch)
     mask_i2 = findall(b->b.netid == :i2, batch)
     mask_r2 = findall(b->b.netid == :r2, batch)
     @assert length(mask_i) + length(mask_r) + length(mask_i2) + length(mask_r2) == n
@@ -161,9 +161,9 @@ function launch_inference_server(
     res_r2 = isempty(mask_r2) ? Nothing[] : fill_and_evaluate(net2[2], batch_r2; batch_size=n, fill_batches)
     res_i = isempty(mask_i) ? Nothing[] : fill_and_evaluate(net1[1], batch_i; batch_size=n, fill_batches)
     res_i2 = isempty(mask_i2) ? Nothing[] : fill_and_evaluate(net2[1], batch_i2; batch_size=n, fill_batches)
-    
+    # @info "types" typeof(res_r) == typeof(res_r2)
     # @assert typeof(res_i) == typeof(res_r) == typeof(res_i2) == typeof(res_r2)
-    res = Vector{eltype(res_i)}(undef, n)
+    res = Vector{Union{eltype.((res_r,res_r2,res_i,res_i2))...}}(undef, n)
     res[mask_i] = res_i
     res[mask_r] = res_r
     res[mask_i2] = res_i2
@@ -188,44 +188,41 @@ function batchify_oracles(o::MuNetwork; kwargs...)
   return make, send_done!(reqc)
 end
 
-function batchify_oracles(os::Tuple{MuNetwork,MuNetwork}; kwargs...)
-  reqc = launch_inference_server(os[1],os[2]; kwargs...)
-  make1() = (;
-  g = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:g1)),
-  f = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:f1)),
-  h = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:h1)),
-  )
-  make2() = (;
-  g = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:g2)),
-  f = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:f2)),
-  h = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:h2)),
-  )
-  return zipthunk(make1,make2), send_done!(reqc)
-end
+# function batchify_oracles(os::Tuple{MuNetwork,MuNetwork}; kwargs...)
+#   reqc = launch_inference_server(os[1],os[2]; kwargs...)
+#   make1() = (;
+#   g = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:g1)),
+#   f = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:f1)),
+#   h = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:h1)),
+#   )
+#   make2() = (;
+#   g = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:g2)),
+#   f = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:f2)),
+#   h = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:h2)),
+#   )
+#   return zipthunk(make1,make2), send_done!(reqc)
+# end
 
-function batchify_oracles(os::Tuple{<:Any, AbstractNetwork}; kwargs...)
-  reqc = launch_inference_server(os[2]; kwargs...)
-  make2() = (;
-  g = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:g)),
-  f = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:f)),
-  h = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:h)),
-  )
-  return zipthunk(ret_oracle(os[1]), make2), send_done!(reqc)
-end
+# function batchify_oracles(os::Tuple{<:Any, AbstractNetwork}; kwargs...)
+#   reqc = launch_inference_server(os[2]; kwargs...)
+#   make2() = (;
+#   g = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:g)),
+#   f = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:f)),
+#   h = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:h)),
+#   )
+#   return zipthunk(ret_oracle(os[1]), make2), send_done!(reqc)
+# end
 
-function batchify_oracles(os::Tuple{AbstractNetwork, <:Any}; kwargs...)
-  reqc = launch_inference_server(os[1]; kwargs...)
-  make1() = (;
-  g = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:g)),
-  f = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:f)),
-  h = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:h)),
-  )
-  return zipthunk(make1, ret_oracle(os[2])), send_done!(reqc)
-end
+# function batchify_oracles(os::Tuple{AbstractNetwork, <:Any}; kwargs...)
+#   reqc = launch_inference_server(os[1]; kwargs...)
+#   make1() = (;
+#   g = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:g)),
+#   f = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:f)),
+#   h = Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:h)),
+#   )
+#   return zipthunk(make1, ret_oracle(os[2])), send_done!(reqc)
+# end
 
-function batchify_oracles(os::Tuple{<:Any, <:Any}; kwargs...)
-  return zipthunk(ret_oracle(os[1]), ret_oracle(os[2])), do_nothing!
-end
 
 function batchify_oracles(o::Any; kwargs...)
   return ret_oracle(o), do_nothing!
@@ -233,9 +230,47 @@ end
 
 function batchify_oracles(o::Tuple{InitialOracle,RecurrentOracle}; kwargs...)
   reqc = launch_inference_server(o; kwargs...)
-  make() = (
+  make = make_make(reqc)
+  return make, send_done!(reqc)
+end
+
+function make_make(reqc)
+  return () -> (
     Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:i)),
     Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:r))
   )
-  return make, send_done!(reqc)
 end
+
+function make_make2(reqc)
+  return () -> (
+    Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:i2)),
+    Batchifier.BatchedOracle(reqc, q -> (query=q, netid=:r2))
+  )
+end
+
+# Two players
+function batchify_oracles(os::Tuple{Tuple{InitialOracle,RecurrentOracle}, Tuple{InitialOracle,RecurrentOracle}}; kwargs...)
+  reqc = launch_inference_server(os[1], os[2]; kwargs...)
+  make = make_make(reqc)
+  make2 = make_make2(reqc)
+  return zipthunk(make,make2), send_done!(reqc)
+end
+
+function batchify_oracles(os::Tuple{<:Any, <:Any}; kwargs...)
+  return zipthunk(ret_oracle(os[1]), ret_oracle(os[2])), do_nothing!
+end
+
+function batchify_oracles(os::Tuple{<:Any, Tuple{InitialOracle,RecurrentOracle}}; kwargs...)
+  reqc = launch_inference_server(os[2]; kwargs...)
+  make = make_make(reqc)
+  return zipthunk(ret_oracle(os[1]),make), send_done!(reqc)
+end
+
+function batchify_oracles(os::Tuple{Tuple{InitialOracle,RecurrentOracle}, <:Any}; kwargs...)
+  reqc = launch_inference_server(os[1]; kwargs...)
+  make = make_make(reqc)
+  return zipthunk(ret_oracle(os[2]),make), send_done!(reqc)
+end
+
+
+

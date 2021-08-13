@@ -86,7 +86,7 @@ function AlphaZero.think(plr::MuPlayer, game)
 	p⁰ = normalize_p(p⁰, actions_mask)[actions_mask]
 
 	recur_res = Ref((p⁰, v⁰, s⁰, zero(v⁰))) # g and f are distincted in mcts.jl, so there is need to pass by reference (or some kind of channel)
-	prediction_recurrent_oracle(state) = state==recur_res[][3] ? recur_res[][1:2] : @error "states don't match"
+	prediction_recurrent_oracle(state) = state==recur_res[][3] ? recur_res[][1:2] : @error "states don't match" state recur_res[][3]
 
 	mcts = MCTS.Env(GI.spec(game), prediction_recurrent_oracle, plr.mcts_params, S=typeof(s⁰))
 	mcts.tree[s⁰] = MCTS.init_state_info(p⁰,v⁰,mcts.prior_temperature)

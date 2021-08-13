@@ -1,8 +1,11 @@
-using Base: AlwaysLockedST
+# using Base: AlwaysLockedST
 function Benchmark.run(env::MuEnv, eval::AlphaZero.Benchmark.Evaluation)
   # net() = Network.copy(env.bestnns, on_gpu=eval.sim.use_gpu, test_mode=true)
   device = eval.sim.use_gpu ? Flux.gpu : Flux.cpu
-  net() = deepcopy(env.bestnns) |> device |> Flux.testmode!
+  function net()
+    nns = deepcopy(env.bestnns) |> device |> Flux.testmode!
+    return (InitialOracle(nns), RecurrentOracle(nns))
+  end
   if isa(eval, Benchmark.Single)
     simulator = Simulator(net, record_trace) do net
       Benchmark.instantiate(eval.player, env.gspec, net)

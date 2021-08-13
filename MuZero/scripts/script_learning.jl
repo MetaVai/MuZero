@@ -14,7 +14,7 @@ LinearAlgebra.BLAS.set_num_threads(1)
 
 include("../mu_game_wrapper.jl")
 include("../network.jl")
-include("../alphazerolike.jl")
+# include("../alphazerolike.jl")
 include("../trace.jl")
 include("../play.jl")
 include("../simulations.jl")
@@ -87,7 +87,7 @@ arena = (;
     temperature=ConstSchedule(0.3),
     dirichlet_noise_ϵ=0.1),
   update_threshold=0.0,
-  device=Flux.gpu)
+  device=Flux.cpu)
 
 
 learning_params = (;
@@ -170,10 +170,10 @@ benchmark = (;
    depth_vectorhead=0, depth_scalarhead=0,  use_batch_norm=false, batch_norm_momentum=1.),
   RepresentationHP(hiddenstate_shape=64, width=0, depth=-1))
 
-  # env = MuEnv(gspec, μparams, MuNetwork(μNetworkHP))
+  env = MuEnv(gspec, μparams, MuNetwork(μNetworkHP))
   # env = MuEnv(gspec, μparams, deepcopy(env.bestnns))
   # env = MuEnv(gspec, μparams, MuNetwork(μNetworkHP), experience=FileIO.load("results/c4_5x4/memory_mctsrollout500.jld2", "mem"))
-  env = MuEnv(gspec, μparams, μNetwork, experience=FileIO.load("results/c4_5x4/memory_mctsrollout500.jld2", "mem"))
+  # env = MuEnv(gspec, μparams, μNetwork, experience=FileIO.load("results/c4_5x4/memory_mctsrollout500.jld2", "mem"))
 
 ##
 
@@ -292,7 +292,7 @@ self_play_step!(env)
   # end
 
 count(last(t.rewards)==(1) for t in env.memory)
-env = envres
+env = envsim
   hyper = env.params.learning_params
   traces = [sample_trace(env.memory) for _ in 1:2] #? change to iterator
   trace_pos_idxs = [sample_position(t) for t in traces]

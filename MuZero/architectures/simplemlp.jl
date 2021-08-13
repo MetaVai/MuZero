@@ -19,7 +19,7 @@ function RepresentationNetwork(gspec::AbstractGameSpec, hyper::RepresentationSim
   function make_dense(indim, outdim)
     if hyper.use_batch_norm
       Chain(
-      Dense(indim, outdim),
+      Dense(indim, outdim, bias=false),
       BatchNorm(outdim, relu, momentum=bnmom))
     else
       Dense(indim, outdim, relu)
