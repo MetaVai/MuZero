@@ -15,3 +15,7 @@ and run
 julia --project -e 'import Pkg; Pkg.instantiate()'
 julia --project ./MuZero/scripts/train_tictactoe.jl 
 ```
+then, to observe results run in different terminal:
+```
+tensorboard --logdir results
+```
