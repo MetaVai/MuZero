@@ -6,8 +6,8 @@ and is inspired by [muzero-general](https://github.com/werner-duvaud/muzero-gene
 
 To train MuZero on tic tac toe, clone this repo, change branch to MuZero,
 ```
-git clone https://github.com/michelangelo21/AlphaZero.jl.git
-cd AlphaZero.jl
+git clone https://github.com/michelangelo21/MuZero.git
+cd MuZero
 git checkout MuZero
 ```
 and run
