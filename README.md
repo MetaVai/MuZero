@@ -22,5 +22,9 @@ then, to observe results, open `tensorboard` in a different terminal:
 tensorboard --logdir results
 ```
 
+after some time curves should look like this:
+![learning results](./docs/scr/img/../../src/assets/img/MuZero_ttt/benchmark_curves.png "Learning Results - benchmarks")
+
+
 ## Acknowledgement
 This implementation wouldn't exist without [Jonathan Laurent](https://github.com/jonathan-laurent) (project mentor, creator of [AlphaZero.jl](https://github.com/jonathan-laurent/AlphaZero.jl)) and his valuable insights
