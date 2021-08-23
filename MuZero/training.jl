@@ -230,7 +230,7 @@ function self_play_step!(env::MuEnv)
     # return MinMax.Player(depth=7, amplify_rewards=false, τ=0.25)
     # return MctsPlayer(gspec, MCTS.RolloutOracle(gspec), params.mcts)
   end
-  results = simulate(simulator, gspec, params.sim)
+  results = simulate(simulator, env.gspec, params.sim)
 
   for r in results
     push!(env.memory, r.trace)
@@ -258,7 +258,7 @@ function learning_step!(env::MuEnv)
       env.bestnns = deepcopy(tr.nns)
       # @info "nns replaced" nns_replaced=true
     else
-      r_cnn, redundancy = pit_networks(gspec, tr.nns, env.bestnns, ap)
+      r_cnn, redundancy = pit_networks(env.gspec, tr.nns, env.bestnns, ap)
       rewards_curnn_mean = mean(r_cnn)
       if rewards_curnn_mean >= ap.update_threshold
         env.bestnns = deepcopy(tr.nns)
